@@ -4,29 +4,33 @@ using System.Collections;
 using TMPro;
 using UnityEngine.UI;
 
+// Aquesta classe ha de tenir ELS MATEIXOS noms que el JSON del servidor
+public class GameConfigData
+{
+    public string activeEvent;    // Coincideix amb gameState.activeEvent
+    public string welcomeMessage; // Coincideix amb gameState.welcomeMessage
+}
+
 public class EventsController : MonoBehaviour
 {
     [Header("UI Elements")]
     public GameObject objectToModify;
     public TMP_Text welcomeText;
+    public string color; 
 
-    private string configURL = "http://localhost:3000/api/config";
+    private string userType = "VIP";
 
-    // Aquesta classe ha de tenir ELS MATEIXOS noms que el JSON del servidor
-    [System.Serializable]
-    public class GameConfig
-    {
-        public string activeEvent;    // Coincideix amb gameState.activeEvent
-        public string welcomeMessage; // Coincideix amb gameState.welcomeMessage
-    }
+    private string configURL = "http://localhost:3000/api/check-user";
 
     void Start()
     {
+        string finalUrl = configURL + "?type=" + userType;
+
         // Quan comença el joc, demanem la config al servidor
-        StartCoroutine(FetchConfig());
+        StartCoroutine(GetGameConfig(finalUrl));
     }
 
-    private IEnumerator FetchConfig()
+    private IEnumerator GetGameConfig(string URL)
     {
         using (UnityWebRequest request = UnityWebRequest.Get(configURL))
         {
@@ -38,7 +42,7 @@ public class EventsController : MonoBehaviour
                 Debug.Log("Config received: " + json);
 
                 // Convertim JSON a C#
-                GameConfig config = JsonUtility.FromJson<GameConfig>(json);
+                GameConfigData config = JsonUtility.FromJson<GameConfigData>(json);
 
                 ApplyChanges(config);
             }
@@ -49,7 +53,7 @@ public class EventsController : MonoBehaviour
         }
     }
 
-    void ApplyChanges(GameConfig config)
+    void ApplyChanges(GameConfigData config)
     {
         // 1. Actualitzem el text
         if (welcomeText != null)

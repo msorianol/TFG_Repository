@@ -6,7 +6,7 @@ const PORT = 3000;
 app.use(cors());
 app.use(express.json());
 // Necessari per llegir les dades dels formularis HTML (botons)
-app.use(express.urlencoded({ extended: true })); 
+app.use(express.urlencoded({ extended: true }));
 
 // --- GAME STATE (MEMORY) ---
 // Per defecte, l'esdeveniment és 'normal'
@@ -24,10 +24,41 @@ app.get('/api/config', (req, res) => {
     res.json(gameState);
 });
 
-// 2. Unity enviarà dades (com abans)
+// 2. Unity enviarà dades
 app.post('/api/button-action', (req, res) => {
     console.log("Data received:", req.body);
     res.json({ status: "OK", received: true });
+});
+
+app.get('/api/check-user', (req, res) => {
+    let userType = req.query.type; // Rebem el tipus d'usuari
+    let currentEvent = gameState.activeEvent;
+    
+    let responseData = {
+        event: currentEvent,
+        color: ""
+    };
+
+    // Lògica CRM: Diferent contingut segons l'usuari
+    // Lògica si és VIP
+    if (userType === "VIP") {
+        responseData.message = "Hola VIP! Gràcies pel teu suport.";
+        responseData.color = "Gold";
+        
+        // Bonus extra si a més és Nadal
+        if (currentEvent === "christmas") {
+            gameState.welcomeMessage = "Bon Nadal VIP! Tens un regal doble!";
+        }
+    } 
+    // Lògica si NO és VIP
+    else {
+        if (currentEvent === "christmas") {
+            gameState.welcomeMessage = "Bon Nadal!";
+            responseData.color = "Red";
+        }
+    }
+
+    res.json(responseData);
 });
 
 // --- WEB DASHBOARD ENDPOINTS ---
@@ -38,7 +69,7 @@ app.get('/', (req, res) => {
     <html>
         <head><style>body{font-family:sans-serif; padding:20px;} button{padding:10px; margin:5px; cursor:pointer;}</style></head>
         <body>
-            <h1>CRM - Event Manager</h1>
+            <h1>LiveOps Admin Console</h1>
             <div style="border: 1px solid #ccc; padding: 20px; background: #646464ff;">
                 <h2>Current State: <span style="color:blue">${gameState.activeEvent.toUpperCase()}</span></h2>
                 <p>Select the active event for players:</p>
@@ -59,12 +90,12 @@ app.get('/', (req, res) => {
 app.post('/change-event', (req, res) => {
     // Actualitzem l'estat global
     gameState.activeEvent = req.body.event;
-    
+
     // Personalitzem missatges segons l'event
-    if(req.body.event === 'christmas') {
+    if (req.body.event === 'christmas') {
         gameState.welcomeMessage = "Merry Christmas, Player!";
     }
-    else if(req.body.event === 'sant_jordi') {
+    else if (req.body.event === 'sant_jordi') {
         gameState.welcomeMessage = "Happy Sant Jordi Day!";
     }
     else {
@@ -76,5 +107,5 @@ app.post('/change-event', (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`CRM active at http://localhost:${PORT}`);
+    console.log("CRM active at http://localhost:${PORT}");
 });
