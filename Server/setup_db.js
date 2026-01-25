@@ -10,11 +10,30 @@ db.serialize(() => {
     stmt.run(1, "normal", "Benvingut", "#FFFFFF");
     stmt.finalize();
 
-    // --- NOVETAT CRM: Taula d'Activitat ---
     // Aquí guardarem cada vegada que algú obre el joc
     db.run("DROP TABLE IF EXISTS activity_log");
     db.run("CREATE TABLE activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT, event_seen TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)");
 
-    console.log("Base de dades actualitzada amb taula de LOGS!");
+    db.run("DROP TABLE IF EXISTS shop_prices");
+
+    // --- NOVA TAULA: PREUS DE BOTIGA PER REGIÓ ---
+    db.run(`
+    CREATE TABLE IF NOT EXISTS shop_prices (
+        item_id TEXT,
+        region TEXT,
+        price REAL
+    )
+`);
+
+    // Dades d'exemple
+    const priceStmt = db.prepare(
+        "INSERT INTO shop_prices (item_id, region, price) VALUES (?,?,?)"
+    );
+
+    priceStmt.run("sword", "CAT", 19.99);
+    priceStmt.run("sword", "US", 1.99);
+    priceStmt.run("sword", "JP", 3.49);
+    priceStmt.finalize();
+
 });
 db.close();

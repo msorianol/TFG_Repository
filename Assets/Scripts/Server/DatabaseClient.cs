@@ -1,6 +1,7 @@
 ﻿using UnityEngine;
 using UnityEngine.Networking;
 using System.Collections;
+using System;
 
 public class EventData
 {
@@ -9,36 +10,39 @@ public class EventData
     public string color;
 }
 
+public class PriceResponse
+{
+    public float price;
+}
+
 public class DatabaseClient : MonoBehaviour
 {
     string serverUrl = "http://localhost:3000/api/get-event";
 
-    // Guardem l'últim esdeveniment per no fer canvis si no cal
     private string lastEventName = "";
+
+    public static Action<float> OnPriceUpdated;
 
     void Start()
     {
-        // Engeguem el bucle infinit
         StartCoroutine(PollServerRoutine());
+        StartCoroutine(GetItemPrice("sword"));
     }
 
     IEnumerator PollServerRoutine()
     {
-        // Aquest bucle s'executarà per sempre mentre el joc estigui obert
         while (true)
         {
             yield return StartCoroutine(CheckForUpdates());
 
-            // Esperem 5 segons abans de tornar a preguntar
-            // (No ho facis cada frame o saturaràs el servidor!)
+            // Esperem 5 segons abans de tornar a preguntar (no es fa cada frame o si no se saturaria el servidor)
             yield return new WaitForSeconds(5f);
         }
     }
 
     IEnumerator CheckForUpdates()
     {
-        // TRUC ANTI-CACHÉ: Afegim l'hora actual a la URL.
-        // Això enganya Unity perquè cregui que és una petició nova cada vegada.
+        // Afegim l'hora actual a la URL. Això enganya Unity perquè cregui que és una petició nova cada vegada.
         string antiCacheUrl = serverUrl + "?t=" + System.DateTime.Now.Ticks;
 
         using (UnityWebRequest request = UnityWebRequest.Get(antiCacheUrl))
@@ -65,6 +69,29 @@ public class DatabaseClient : MonoBehaviour
         }
     }
 
+    IEnumerator GetItemPrice(string itemId)
+    {
+        string url = "http://localhost:3000/api/get-price";
+
+        WWWForm form = new WWWForm();
+        form.AddField("itemId", itemId);
+        form.AddField("region", "CAT"); // simulació de regió
+
+        using (UnityWebRequest request = UnityWebRequest.Post(url, form))
+        {
+            yield return request.SendWebRequest();
+
+            if (request.result == UnityWebRequest.Result.Success)
+            {
+                PriceResponse response = JsonUtility.FromJson<PriceResponse>(request.downloadHandler.text);
+
+                OnPriceUpdated?.Invoke(response.price);
+
+                Debug.Log("💰 Preu rebut del CRM: " + response.price + "€");
+            }
+        }
+    }
+
     void ApplyChanges(EventData data)
     {
         Color newColor;
@@ -72,5 +99,7 @@ public class DatabaseClient : MonoBehaviour
         {
             Camera.main.backgroundColor = newColor;
         }
+
+        Debug.Log("Missatge CRM: " + data.message);
     }
 }

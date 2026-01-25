@@ -34,7 +34,7 @@ app.get('/api/get-event', (req, res) => {
 app.get('/dashboard', (req, res) => {
     // Primer consultem les estadístiques a la Base de Dades
     db.all("SELECT event_seen, COUNT(*) as count FROM activity_log GROUP BY event_seen", (err, rows) => {
-        
+
         // Preparem la llista d'estadístiques per pintar-la al HTML
         let statsHtml = "";
         if (rows) {
@@ -79,6 +79,33 @@ app.get('/dashboard', (req, res) => {
             </html>
         `);
     });
+});
+
+// --- CAMINET 3: PREUS DINÀMICS PER REGIÓ ---
+app.post('/api/get-price', (req, res) => {
+    const { itemId, region } = req.body;
+
+    db.get(
+        "SELECT price FROM shop_prices WHERE item_id = ? AND region = ?",
+        [itemId, region],
+        (err, row) => {
+            if (err) {
+                return res.status(500).json({ error: err.message });
+            }
+
+            // Log CRM (opcional però molt bé)
+            db.run(
+                "INSERT INTO activity_log (event_seen) VALUES (?)",
+                [`price_request_${itemId}_${region}`]
+            );
+
+            if (!row) {
+                return res.json({ price: 2.99 }); // fallback
+            }
+
+            res.json({ price: row.price });
+        }
+    );
 });
 
 app.post('/update-event', (req, res) => {
