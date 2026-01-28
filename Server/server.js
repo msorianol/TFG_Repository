@@ -1,12 +1,17 @@
-const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
-const bodyParser = require('body-parser');
+// S'importen les llibreries necessàries:
+// "express": El framework que ens permet crear un servidor web fàcilment
+const express = require("express");
+
+// 'sqlite3': El conductor (driver) que permet a Node.js parlar amb el fitxer.db.
+//.verbose() fa que si hi ha un error, ens doni molts detalls a la consola.
+const sqlite3 = require("sqlite3").verbose();
+const bodyParser = require("body-parser");
 
 const app = express();
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-const db = new sqlite3.Database('./game_data.db');
+const db = new sqlite3.Database("./game_data.db");
 
 // 1. ASSEGUREM QUE LA TAULA DE LOGS EXISTEIX (Per si no has passat el setup)
 db.run("CREATE TABLE IF NOT EXISTS activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT, event_seen TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)");
@@ -100,7 +105,7 @@ app.post('/api/get-price', (req, res) => {
             );
 
             if (!row) {
-                return res.json({ price: 2.99 }); // fallback
+                return res.json({ price: 3.99 }); // fallback
             }
 
             res.json({ price: row.price });
@@ -128,5 +133,5 @@ app.post('/update-event', (req, res) => {
 });
 
 app.listen(3000, () => {
-    console.log("🚀 Servidor CRM llest a http://localhost:3000/dashboard");
+    console.log("Servidor CRM llest a http://localhost:3000/dashboard");
 });

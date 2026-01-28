@@ -452,9 +452,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: aad329e2e90827e4f802d14f21bae81e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CanvasController
-  priceText: {fileID: 204858573}
-  itemId: sword
-  region: CAT
+  swordPriceText: {fileID: 204858573}
+  shieldPriceText: {fileID: 2140485691}
 --- !u!1 &352543870
 GameObject:
   m_ObjectHideFlags: 0

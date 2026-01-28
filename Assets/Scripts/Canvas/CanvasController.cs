@@ -1,12 +1,11 @@
-﻿using UnityEngine;
-using UnityEngine.Networking;
-using TMPro;
-using System.Collections;
+﻿using TMPro;
+using UnityEngine;
 
 public class CanvasController : MonoBehaviour
 {
     [Header("UI")]
-    public TextMeshProUGUI priceText;
+    [SerializeField] private TMP_Text swordPriceText;
+    [SerializeField] private TMP_Text shieldPriceText;
 
     private void OnEnable()
     {
@@ -18,8 +17,17 @@ public class CanvasController : MonoBehaviour
         DatabaseClient.OnPriceUpdated -= UpdatePriceUI;
     }
 
-    void UpdatePriceUI(float price)
+    void UpdatePriceUI(string itemId, float price)
     {
-        priceText.text = price.ToString("0.00") + " €";
+        string priceString = price.ToString("0.00") + " €";
+
+        if (itemId == "sword")
+        {
+            swordPriceText.text = priceString;
+        }
+        else if (itemId == "shield")
+        {
+            shieldPriceText.text = priceString;
+        }
     }
 }
