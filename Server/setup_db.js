@@ -1,9 +1,9 @@
 // Importem la llibreria SQLite3
 //.verbose() serveix perquè, si hi ha errors, la consola ens doni més detalls
-const sqlite3 = require('sqlite3').verbose();
+const sqlite3 = require("sqlite3").verbose();
 
 // Si l'arxiu 'game_data.db' no existeix, aquesta línia el crea automàticament. Si ja existeix, simplement l'obre per llegir/escriure
-const db = new sqlite3.Database('./game_data.db');
+const db = new sqlite3.Database("./game_data.db");
 
 // db.serialize() és una "fila índia". Javascript és asíncron (vol fer-ho tot alhora). Dins de serialize(), obliguem Javascript
 // a fer les coses en ordre: primer esborra, després crea, després insereix. Sense això, podria intentar inserir dades en una taula que encara no s'ha creat

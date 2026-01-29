@@ -1,41 +1,38 @@
 // S'importen les llibreries necessàries:
-// "express": El framework que ens permet crear un servidor web fàcilment
+// express: El framework que permet crear un servidor web fàcilment
 const express = require("express");
 
-// 'sqlite3': El conductor (driver) que permet a Node.js parlar amb el fitxer.db.
-//.verbose() fa que si hi ha un error, ens doni molts detalls a la consola.
 const sqlite3 = require("sqlite3").verbose();
+
+// body-parser: Un traductor per quan Unity ens envia dades (JSON)
+// Aquesta eina les converteix en objectes de JavaScript, perquè es pugui llegir fàcilment
 const bodyParser = require("body-parser");
 
-const app = express();
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+const app = express(); // S'inicia l'aplicació
+app.use(bodyParser.json()); // Es prepara l'app per entendre JSON
+app.use(bodyParser.urlencoded({ extended: true })); // Es prepara l'app per entendre formularis web
 
+// Es connecta amb el fitxer físic de la base de dades
 const db = new sqlite3.Database("./game_data.db");
 
-// 1. ASSEGUREM QUE LA TAULA DE LOGS EXISTEIX (Per si no has passat el setup)
-db.run("CREATE TABLE IF NOT EXISTS activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT, event_seen TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)");
-
-
-// --- CAMINET 1: Unity demana informació (GET) ---
+// db.get: Es demana una sola fila a la base de dades
+// WHERE id = 1: Sempre es busca la fila 1, que actua com a configuració global
 app.get('/api/get-event', (req, res) => {
     db.get("SELECT name, message, color FROM events WHERE id = 1", (err, row) => {
         if (err) {
-            res.status(500).json({ error: err.message });
+            res.status(500).json({ error: err.message }); // Si la base de dades falla, avisem a Unity amb un error 500
             return;
         }
 
-        // --- NOVETAT CRM: Guardem que Unity ha fet una petició ---
-        // Això omple la base de dades amb dades reals d'ús
+        // S'omple la base de dades amb dades reals d'ús
         db.run("INSERT INTO activity_log (event_seen) VALUES (?)", [row.name]);
-        console.log(`📊 Log guardat: L'usuari ha consultat l'estat '${row.name}'`);
 
+        // Finalment, s'envia la resposta a Unity en format JSON: { "name": "christmas", "message": "Bon Nadal", "color": "#FF0000" }
         res.json(row);
     });
 });
 
-
-// --- CAMINET 2: El Dashboard (Amb Gràfiques d'Analítica) ---
+// El Dashboard 
 app.get('/dashboard', (req, res) => {
     // Primer consultem les estadístiques a la Base de Dades
     db.all("SELECT event_seen, COUNT(*) as count FROM activity_log GROUP BY event_seen", (err, rows) => {
@@ -48,7 +45,7 @@ app.get('/dashboard', (req, res) => {
             });
         }
 
-        // Enviem la pàgina web
+        // Enviem tot el codi HTML al navegador
         res.send(`
             <html>
             <head>
@@ -61,24 +58,14 @@ app.get('/dashboard', (req, res) => {
             </head>
             <body>
                 <div class="container">
-                    <h1>🎛️ LiveOps Dashboard</h1>
+                    <h1>Dashboard</h1>
                     <p>Controla l'estat del joc en temps real:</p>
                     
                     <form action="/update-event" method="POST">
-                        <button name="eventName" value="normal" style="background:#eee;">⚪ Mode Normal</button>
-                        <button name="eventName" value="christmas" style="background:#ffcccc;">🎄 Mode Nadal</button>
-                        <button name="eventName" value="sant_jordi" style="background:#ffffcc;">🌹 Mode Sant Jordi</button>
+                        <button name="eventName" value="normal" style="background:#eee;">Mode Normal</button>
+                        <button name="eventName" value="christmas" style="background:#ffcccc;">Mode Nadal</button>
+                        <button name="eventName" value="sant_jordi" style="background:#ffffcc;">Mode Sant Jordi</button>
                     </form>
-
-                    <div class="stats">
-                        <h3>📈 Analítica de Connexions</h3>
-                        <p>Quantes vegades s'ha carregat cada esdeveniment?</p>
-                        <ul>
-                            ${statsHtml || "<li>Encara no hi ha dades. Connecta Unity!</li>"}
-                        </ul>
-                        <br>
-                        <small><i>Nota: Si Unity fa polling cada 5s, aquests números pujaran ràpid!</i></small>
-                    </div>
                 </div>
             </body>
             </html>
@@ -86,19 +73,15 @@ app.get('/dashboard', (req, res) => {
     });
 });
 
-// --- CAMINET 3: PREUS DINÀMICS PER REGIÓ ---
+
 app.post('/api/get-price', (req, res) => {
     const { itemId, region } = req.body;
 
-    db.get(
-        "SELECT price FROM shop_prices WHERE item_id = ? AND region = ?",
-        [itemId, region],
-        (err, row) => {
+    db.get("SELECT price FROM shop_prices WHERE item_id = ? AND region = ?", [itemId, region], (err, row) => {
             if (err) {
-                return res.status(500).json({ error: err.message });
+                return res.status(500).json({ error: err.message }); // Si la base de dades falla, avisem a Unity amb un error 500
             }
 
-            // Log CRM (opcional però molt bé)
             db.run(
                 "INSERT INTO activity_log (event_seen) VALUES (?)",
                 [`price_request_${itemId}_${region}`]
