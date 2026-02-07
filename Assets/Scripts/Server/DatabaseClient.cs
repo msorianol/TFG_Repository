@@ -1,15 +1,14 @@
-﻿using UnityEngine;
-using UnityEngine.Networking;
+﻿using System;
 using System.Collections;
-using System;
+using UnityEngine;
+using UnityEngine.Networking;
 
 public class DatabaseClient : MonoBehaviour
 {
-    string serverUrl = "http://localhost:3000/api/get-event";
+    private readonly string _serverUrl = "http://localhost:3000/api/get-event";
+    private string _lastEventName = "";
 
-    private string lastEventName = "";
-
-    public static Action<string, float> OnPriceUpdated;
+    public static event Action<string, float, string> OnPriceUpdated;
 
     void Start()
     {
@@ -32,7 +31,7 @@ public class DatabaseClient : MonoBehaviour
     IEnumerator CheckForUpdates()
     {
         // S'afegeix l'hora actual a la URL. Això enganya Unity perquè cregui que és una petició nova cada vegada.
-        string antiCacheUrl = serverUrl + "?t=" + System.DateTime.Now.Ticks;
+        string antiCacheUrl = _serverUrl + "?t=" + DateTime.Now.Ticks;
 
         using (UnityWebRequest request = UnityWebRequest.Get(antiCacheUrl))
         {
@@ -44,10 +43,10 @@ public class DatabaseClient : MonoBehaviour
                 EventData data = JsonUtility.FromJson<EventData>(json);
 
                 // Només s'apliquen canvis si l'esdeveniment és nou
-                if (data.name != lastEventName)
+                if (data.name != _lastEventName)
                 {
                     Debug.Log("New event: " + data.name);
-                    lastEventName = data.name;
+                    _lastEventName = data.name;
                     ApplyChanges(data);
                 }
             }
@@ -74,9 +73,10 @@ public class DatabaseClient : MonoBehaviour
             {
                 PriceResponse response = JsonUtility.FromJson<PriceResponse>(request.downloadHandler.text);
 
-                OnPriceUpdated?.Invoke(itemId, response.price);
+                string currencySymbol = string.IsNullOrEmpty(response.currency)? "?" : response.currency;
+                OnPriceUpdated?.Invoke(itemId, response.price, currencySymbol);
 
-                Debug.Log($"Price recieved for {itemId}: {response.price}€");
+                Debug.Log($"Price recieved for {itemId}: {response.price} {currencySymbol}");
             }
         }
     }
@@ -86,7 +86,7 @@ public class DatabaseClient : MonoBehaviour
         Color newColor;
         if (ColorUtility.TryParseHtmlString(data.color, out newColor))
         {
-            Camera.main.backgroundColor = newColor;
+            if (Camera.main != null) Camera.main.backgroundColor = newColor;
         }
 
         Debug.Log("Message from the CRM: " + data.message);
