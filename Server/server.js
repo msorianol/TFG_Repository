@@ -3,12 +3,12 @@
 const express = require("express");
 const sqlite3 = require("sqlite3").verbose();
 
-// geoip-lite: Llibreria de geolocalització
-const geoip = require('geoip-lite');
-
 // body-parser: Un traductor per quan Unity ens envia dades (JSON)
 // Aquesta eina les converteix en objectes de JavaScript, perquè es pugui llegir fàcilment
 const bodyParser = require("body-parser");
+
+// geoip-lite: Llibreria de geolocalització
+const geoip = require('geoip-lite');
 
 const app = express(); // S'inicia l'aplicació
 app.use(bodyParser.json()); // Es prepara l'app per entendre JSON
@@ -16,6 +16,8 @@ app.use(bodyParser.urlencoded({ extended: true })); // Es prepara l'app per ente
 
 // Es connecta amb el fitxer físic de la base de dades
 const db = new sqlite3.Database("./game_data.db");
+
+let debugSimulatedIp = "84.88.1.1";
 
 // db.get: Es demana una sola fila a la base de dades
 // WHERE id = 1: Sempre es busca la fila 1, que actua com a configuració global
@@ -39,6 +41,9 @@ app.get('/dashboard', (req, res) => {
             const outputs = (contract && contract.outputs) ? JSON.parse(contract.outputs) : [];
             const activeEventName = currentEvent ? currentEvent.name.toUpperCase() : "DESCONEGUT";
 
+            const geoSim = geoip.lookup(debugSimulatedIp);
+            const regionSim = geoSim ? geoSim.country : "DESCONEGUT";
+
             res.send(`
                 <html>
                 <head>
@@ -58,10 +63,13 @@ app.get('/dashboard', (req, res) => {
                 </head>
                 <body>
                     <div class="card">
-                        <h1>Productor Console</h1>
+                        <h1>Dashboard</h1>
                         
                         <div class="status-bar">
-                            ESTAT ACTUAL DEL JOC: <span style="color:#ffeb3b">${activeEventName}</span>
+                            ESDEVENIMENT: <span style="color: #ffeb3b">${activeEventName}</span>
+                            <br>
+                            <br>
+                            SIMULACIÓ IP: <span style="color: #ffeb3b">${regionSim} (${debugSimulatedIp})</span>
                         </div>
 
                         <form action="/update-contract" method="POST">
@@ -81,21 +89,35 @@ app.get('/dashboard', (req, res) => {
 
                         <hr style="margin: 30px 0;">
 
-                        <h2>LiveOps: Gestió d'Esdeveniments</h2>
+                        <h2>Gestió d'Esdeveniments</h2>
                         <div class="section event-section">
-                            <p>Canvia l'ambient del joc en temps real:</p>
                             <form action="/update-event" method="POST">
-                                <button class="btn-event" name="eventName" value="normal" style="background:#607d8b;">⚪ Mode Normal</button>
-                                <button class="btn-event" name="eventName" value="christmas" style="background:#d32f2f;">🎄 Activar Nadal</button>
-                                <button class="btn-event" name="eventName" value="sant_jordi" style="background:#fbc02d; color: black;">🌹 Activar Sant Jordi</button>
+                                <button class="btn-event" name="eventName" value="normal" style="background: #607d8b;">⚪ Normal</button>
+                                <button class="btn-event" name="eventName" value="christmas" style="background: #d32f2f;">🎄 Activar Nadal</button>
+                                <button class="btn-event" name="eventName" value="sant_jordi" style="background: #fbc02d; color: black;">🌹 Activar Sant Jordi</button>
                             </form>
                         </div>
+
+                        <h2>Simulador IP</h2>
+                        <div class="section debug-section">
+                            <form action="/debug/set-ip" method="POST" style="display:flex; gap:10px;">
+                                <button class="btn-cat" name="fakeIp" value="84.88.1.1">🇪🇸 Simular ESP</button>
+                                <button class="btn-us" name="fakeIp" value="8.8.8.8">🇺🇸 Simular USA</button>
+                                <button class="btn-jp" name="fakeIp" value="1.72.0.0">🇯🇵 Simular JPN</button>
+                            </form>
+                        </div>
+
                     </div>
                 </body>
                 </html>
             `);
         });
     });
+});
+
+app.post('/debug/set-ip', (req, res) => {
+    debugSimulatedIp = req.body.fakeIp;
+    res.redirect('/dashboard');
 });
 
 app.post('/update-contract', (req, res) => {
@@ -126,8 +148,7 @@ app.post('/api/get-price', (req, res) => {
         const allowedOutputs = (contract && contract.outputs) ? JSON.parse(contract.outputs) : [];
 
         const itemId = allowedInputs.includes("itemId") ? req.body.itemId : null;
-
-        let region = "US";
+        let region = "CAT";
 
         // Es mira si l'API permet que Unity "forci" la regió manualment
         if (allowedInputs.includes("region") && req.body.region) {
@@ -138,12 +159,9 @@ app.post('/api/get-price', (req, res) => {
             // Si no, es detecta la IP automàticament
             let ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
 
-            // Simulació per a Localhost (perquè puguis testejar el TFG)
+            // Simulació per a Localhost
             if (ip.includes('127.0.0.1') || ip.includes('::1')) {
-                // Opcions per provar si funciona en els 3 casos:
-                //ip = "84.88.1.1"; // IP Barcelona (Telefònica) -> Hauria de donar 'CAT'
-                //ip = "1.1.1.1";   // IP USA (Cloudflare) -> Hauria de donar 'US'
-                //ip = "1.72.0.0";  // IP Tokyo -> Hauria de donar 'JP'
+                ip = debugSimulatedIp;
             }
 
             const geo = geoip.lookup(ip);
@@ -152,7 +170,6 @@ app.post('/api/get-price', (req, res) => {
                 else if (geo.country === "JP") region = "JP"; // Japó
                 else region = "US"; // Resta del món (Dòlars)
             }
-            console.log(`🌍 IP: ${ip} -> Detectat: ${region}`); 
         }
 
         db.get(

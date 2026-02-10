@@ -8,12 +8,12 @@ public class CanvasController : MonoBehaviour
 
     private void OnEnable()
     {
-        DatabaseClient.OnPriceUpdated += UpdatePriceUI;
+        CRM_Manager.OnPriceUpdated += UpdatePriceUI;
     }
 
     private void OnDisable()
     {
-        DatabaseClient.OnPriceUpdated -= UpdatePriceUI;
+        CRM_Manager.OnPriceUpdated -= UpdatePriceUI;
     }
 
     void UpdatePriceUI(string itemId, float price, string currency)

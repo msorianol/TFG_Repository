@@ -1,4 +1,4 @@
-﻿public class EventData
+﻿public class EventResponse
 {
     public string name;
     public string message;

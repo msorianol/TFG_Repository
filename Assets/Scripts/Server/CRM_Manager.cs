@@ -3,7 +3,7 @@ using System.Collections;
 using UnityEngine;
 using UnityEngine.Networking;
 
-public class DatabaseClient : MonoBehaviour
+public class CRM_Manager : MonoBehaviour
 {
     private readonly string _serverUrl = "http://localhost:3000/api/get-event";
     private string _lastEventName = "";
@@ -13,24 +13,25 @@ public class DatabaseClient : MonoBehaviour
     void Start()
     {
         StartCoroutine(PollServerRoutine());
-        StartCoroutine(GetItemPrice("sword"));
-        StartCoroutine(GetItemPrice("shield"));
     }
 
     IEnumerator PollServerRoutine()
     {
         while (true)
         {
-            yield return StartCoroutine(CheckForUpdates());
+            yield return StartCoroutine(CheckForEventUpdates());
+
+            yield return StartCoroutine(GetItemPrice("sword"));
+            yield return StartCoroutine(GetItemPrice("shield"));
 
             // S'espera 5 segons abans de tornar a preguntar (no es fa cada frame o si no se saturaria el servidor)
             yield return new WaitForSeconds(5f);
         }
     }
 
-    IEnumerator CheckForUpdates()
+    IEnumerator CheckForEventUpdates()
     {
-        // S'afegeix l'hora actual a la URL. Això enganya Unity perquè cregui que és una petició nova cada vegada.
+        // S'afegeix l'hora actual a la URL. Això "enganya" Unity perquè cregui que és una petició nova cada vegada
         string antiCacheUrl = _serverUrl + "?t=" + DateTime.Now.Ticks;
 
         using (UnityWebRequest request = UnityWebRequest.Get(antiCacheUrl))
@@ -40,14 +41,14 @@ public class DatabaseClient : MonoBehaviour
             if (request.result == UnityWebRequest.Result.Success)
             {
                 string json = request.downloadHandler.text;
-                EventData data = JsonUtility.FromJson<EventData>(json);
+                EventResponse eventResponse = JsonUtility.FromJson<EventResponse>(json);
 
                 // Només s'apliquen canvis si l'esdeveniment és nou
-                if (data.name != _lastEventName)
+                if (eventResponse.name != _lastEventName)
                 {
-                    Debug.Log("New event: " + data.name);
-                    _lastEventName = data.name;
-                    ApplyChanges(data);
+                    Debug.Log("New event: " + eventResponse.name);
+                    _lastEventName = eventResponse.name;
+                    ApplyEventChanges(eventResponse);
                 }
             }
             else
@@ -63,7 +64,7 @@ public class DatabaseClient : MonoBehaviour
 
         WWWForm form = new WWWForm();
         form.AddField("itemId", itemId);
-        form.AddField("region", "CAT"); // simulació de regió (s'haurà d'implementar més endavant la lectura de la IP per saber la regió de cada jugador)
+        form.AddField("region", "CAT"); // simulació de regió
 
         using (UnityWebRequest request = UnityWebRequest.Post(url, form))
         {
@@ -73,22 +74,22 @@ public class DatabaseClient : MonoBehaviour
             {
                 PriceResponse response = JsonUtility.FromJson<PriceResponse>(request.downloadHandler.text);
 
-                string currencySymbol = string.IsNullOrEmpty(response.currency)? "?" : response.currency;
+                string currencySymbol = string.IsNullOrEmpty(response.currency) ? "?" : response.currency;
                 OnPriceUpdated?.Invoke(itemId, response.price, currencySymbol);
 
-                Debug.Log($"Price recieved for {itemId}: {response.price} {currencySymbol}");
+                // Debug.Log($"Price recieved for {itemId}: {response.price} {currencySymbol}");
             }
         }
     }
 
-    void ApplyChanges(EventData data)
+    void ApplyEventChanges(EventResponse response)
     {
         Color newColor;
-        if (ColorUtility.TryParseHtmlString(data.color, out newColor))
+        if (ColorUtility.TryParseHtmlString(response.color, out newColor))
         {
             if (Camera.main != null) Camera.main.backgroundColor = newColor;
         }
 
-        Debug.Log("Message from the CRM: " + data.message);
+        Debug.Log("Message from the CRM: " + response.message);
     }
 }
