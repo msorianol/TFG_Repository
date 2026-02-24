@@ -1,22 +1,33 @@
-﻿using TMPro;
+﻿using Server;
+using TMPro;
 using UnityEngine;
+using UnityEngine.UI;
 
 public class CanvasController : MonoBehaviour
 {
-    [Header("UI")] [SerializeField] private TMP_Text swordPriceText;
+    [Header("TEXTS")] [SerializeField] private TMP_Text swordPriceText;
     [SerializeField] private TMP_Text shieldPriceText;
+
+    [Header("BACKGROUND & IMAGES")] [SerializeField]
+    private Image shopBackgroundImage;
+
+    [SerializeField] private Sprite normalShopImage;
+    [SerializeField] private Sprite christmasShopImage;
+    [SerializeField] private Sprite santJordiShopImage;
 
     private void OnEnable()
     {
         CRM_Manager.OnPriceUpdated += UpdatePriceUI;
+        CRM_Manager.OnEventUpdated += UpdateBackgroundImage;
     }
 
     private void OnDisable()
     {
         CRM_Manager.OnPriceUpdated -= UpdatePriceUI;
+        CRM_Manager.OnEventUpdated -= UpdateBackgroundImage;
     }
 
-    void UpdatePriceUI(string itemId, float price, string currency)
+    private void UpdatePriceUI(string itemId, float price, string currency)
     {
         string symbol = currency;
         if (currency == "EUR") symbol = "€";
@@ -34,6 +45,22 @@ public class CanvasController : MonoBehaviour
         else if (itemId == "shield")
         {
             shieldPriceText.text = priceString;
+        }
+    }
+
+    private void UpdateBackgroundImage(string eventName)
+    {
+        if (eventName == "christmas")
+        {
+            shopBackgroundImage.sprite = christmasShopImage;
+        }
+        else if (eventName == "sant_jordi")
+        {
+            shopBackgroundImage.sprite = santJordiShopImage;
+        }
+        else
+        {
+            shopBackgroundImage.sprite = normalShopImage;
         }
     }
 }

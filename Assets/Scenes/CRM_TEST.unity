@@ -454,6 +454,10 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::CanvasController
   swordPriceText: {fileID: 204858573}
   shieldPriceText: {fileID: 2140485691}
+  shopBackgroundImage: {fileID: 352543872}
+  normalShopImage: {fileID: -2765467171962141693, guid: a322c18e6fdebe54e839038bc6990429, type: 3}
+  christmasShopImage: {fileID: -4768159223430816388, guid: 3fa58493d48bafb4b836c6287fb7e42d, type: 3}
+  santJordiShopImage: {fileID: 3161146904910224086, guid: e42fe302376d1644a89e8087f827ad58, type: 3}
 --- !u!1 &352543870
 GameObject:
   m_ObjectHideFlags: 0
@@ -651,6 +655,55 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 644723352}
   m_CullTransparentMesh: 1
+--- !u!1 &780894844
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 780894846}
+  - component: {fileID: 780894845}
+  m_Layer: 0
+  m_Name: PlayerData
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &780894845
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 780894844}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8d085b846b8240dd9e352fc3a4a48d9b, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Server.PlayerData.PlayerData
+  itemId: 
+  playerLevel: 0
+  playerXP: 100
+  playerClass: 
+  daysPlayed: 0
+--- !u!4 &780894846
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 780894844}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &913019427
 GameObject:
   m_ObjectHideFlags: 0
@@ -1249,3 +1302,4 @@ SceneRoots:
   - {fileID: 1406003764}
   - {fileID: 300178147}
   - {fileID: 116647862}
+  - {fileID: 780894846}
