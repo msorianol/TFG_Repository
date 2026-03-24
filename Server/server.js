@@ -21,7 +21,6 @@ db.run("ALTER TABLE api_contract ADD COLUMN rules TEXT DEFAULT '[]'", () => {
     // Si no existia, l'acaba de crear amb array buit per defecte.
 });
 
-
 // ------------------------------------
 //  HELPERS
 // ------------------------------------
@@ -48,40 +47,61 @@ function parseRules(raw) {
 }
 
 // ------------------------------------
-// MOTOR DE REGLES
-// Avalua totes les regles contra les dades rebudes.
-// Operadors suportats: >= <= == > < !=
-// Si múltiples regles apliquen, s'aplica el MAJOR descompte.
+// MOTOR DE REGLES — Forma Normal Disjuntiva (FND)
+//
+// Estructura d'una regla:
+//   { groups: [ { conditions: [{field, operator, value}, ...] }, ... ], discount }
+//
+// Avaluació: OR entre grups, AND dins de cada grup.
+//   (A ∧ B) ∨ (C ∧ D)  →  group0.every() || group1.every()
+//
+// Si múltiples regles apliquen, s'usa el MAJOR descompte.
 // ------------------------------------
+
+// Avalua una sola condició atòmica contra les dades rebudes.
+function evalCondition({ field, operator, value }, data) {
+    const rawVal = data[field];
+    if (rawVal === undefined || rawVal === null || rawVal === "") return false;
+
+    const isNumeric = !isNaN(rawVal) && !isNaN(value);
+    const fv = isNumeric ? parseFloat(rawVal)  : String(rawVal).trim().toLowerCase();
+    const rv = isNumeric ? parseFloat(value)   : String(value).trim().toLowerCase();
+
+    const ops = {
+        ">=": () => isNumeric && fv >= rv,
+        "<=": () => isNumeric && fv <= rv,
+        ">":  () => isNumeric && fv >  rv,
+        "<":  () => isNumeric && fv <  rv,
+        "==": () => fv == rv,
+        "!=": () => fv != rv,
+    };
+    return ops[operator]?.() ?? false;
+}
+
+// Motor FND: OR de grups (clàusules AND).
 function applyRules(rules, data) {
-    let bestDiscount = 0;
+    // Filtrem les regles que compleixen la condició FND
+    const matched = rules.filter(rule =>
+        rule.groups.some(group => group.conditions.every(c => evalCondition(c, data)))
+    );
 
-    for (const rule of rules) {
-        const rawVal = data[rule.field];
-        if (rawVal === undefined || rawVal === null || rawVal === "") continue;
+    if (matched.length === 0) return 0;
 
-        // Tractem com a número si és possible; si no, comparem com a string
-        const isNumeric = !isNaN(rawVal) && !isNaN(rule.value);
-        const fieldVal  = isNumeric ? parseFloat(rawVal)     : String(rawVal).trim().toLowerCase();
-        const ruleVal   = isNumeric ? parseFloat(rule.value) : String(rule.value).trim().toLowerCase();
+    // Ordenem per prioritat descendent (major prioritat primer).
+    // En cas d'empat de prioritat, guanya el major descompte.
+    matched.sort((a, b) => {
+        const pa = a.priority ?? 0;
+        const pb = b.priority ?? 0;
+        return pb !== pa ? pb - pa : (b.discount - a.discount);
+    });
 
-        let match = false;
-        switch (rule.operator) {
-            case ">=": match = isNumeric && fieldVal >= ruleVal; break;
-            case "<=": match = isNumeric && fieldVal <= ruleVal; break;
-            case ">":  match = isNumeric && fieldVal >  ruleVal; break;
-            case "<":  match = isNumeric && fieldVal <  ruleVal; break;
-            case "==": match = fieldVal == ruleVal;              break;
-            case "!=": match = fieldVal != ruleVal;              break;
-        }
+    const winner = matched[0];
+    const fndStr = winner.groups
+        .map(g => '(' + g.conditions.map(c => `${c.field} ${c.operator} ${c.value}`).join(' ∧ ') + ')')
+        .join(' ∨ ');
+    console.log(`✅ Regla guanyadora [prioritat ${winner.priority ?? 0}]: ${fndStr} → ${winner.discount * 100}%`);
 
-        if (match) {
-            const d = parseFloat(rule.discount) || 0;
-            if (d > bestDiscount) bestDiscount = d;
-            console.log(`✅ Regla aplicada: ${rule.field} ${rule.operator} ${rule.value} → ${d*100}% de descompte`);
-        }
-    }
-    return bestDiscount;
+    return parseFloat(winner.discount) || 0;
 }
 
 
@@ -198,19 +218,34 @@ app.get('/dashboard', (req, res) => {
             // ── Renderitza les regles actuals ──
             function renderRules(rules) {
                 if (rules.length === 0) return `<p class="empty">Cap regla definida.</p>`;
-                return rules.map((rule, i) => `
+                return rules.map((rule, i) => {
+                    // Renderitza cada grup com un AND de condicions
+                    const groupsHtml = rule.groups.map((group, gi) => {
+                        const condsHtml = group.conditions.map((c, ci) =>
+                            `${ci > 0 ? '<span class="logic-op">∧</span>' : ''}
+                             <code>${c.field}</code>
+                             <span class="op">${c.operator}</span>
+                             <code>${c.value}</code>`
+                        ).join('');
+                        return `
+                            ${gi > 0 ? '<span class="logic-op or-op">∨</span>' : ''}
+                            <span class="group-wrap">(${condsHtml})</span>`;
+                    }).join('');
+
+                    const prio = rule.priority ?? 0;
+                    return `
                     <div class="rule-row">
+                        <span class="prio-badge" title="Prioritat">P${prio}</span>
                         <span class="rule-body">
-                            <code>${rule.field}</code>
-                            <span class="op">${rule.operator}</span>
-                            <code>${rule.value}</code>
+                            ${groupsHtml}
                             <span class="arrow">→</span>
                             <strong>${Math.round(rule.discount * 100)}% de descompte</strong>
                         </span>
                         <a href="/delete-rule?index=${i}"
                            onclick="return confirm('Eliminar aquesta regla?')"
                            class="del-btn" title="Eliminar">×</a>
-                    </div>`).join('');
+                    </div>`;
+                }).join('');
             }
 
             const fieldOptions = inputs.map(f =>
@@ -220,6 +255,105 @@ app.get('/dashboard', (req, res) => {
             const inputRows  = renderFieldRows(inputs,  'in');
             const outputRows = renderFieldRows(outputs, 'out');
             const ruleRows   = renderRules(rules);
+
+            // clientScript: s'injecta directament al HTML.
+            // El codi del client usa createElement per evitar template literals
+            // niats dins del res.send() de Node.
+            function buildClientScript(fieldOpts, opOpts) {
+                return `<script>
+var FIELD_OPTIONS = ${JSON.stringify(fieldOpts)};
+var OP_OPTIONS    = ${JSON.stringify(opOpts)};
+var groupCount    = 0;
+
+function makeSelect(name, optionsHtml) {
+    var s = document.createElement('select');
+    s.name = name;
+    s.innerHTML = optionsHtml;
+    return s;
+}
+function makeInput(name) {
+    var i = document.createElement('input');
+    i.type = 'text'; i.name = name; i.placeholder = 'valor'; i.style.width = '100px';
+    return i;
+}
+function conditionHtml(gi, ci) {
+    var row = document.createElement('div');
+    row.className = 'cond-row';
+    row.id = 'cond-' + gi + '-' + ci;
+    row.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:5px;';
+    if (ci > 0) {
+        var andSp = document.createElement('span');
+        andSp.style.cssText = 'font-size:11px;font-weight:700;color:#f87171;font-family:monospace;min-width:14px;';
+        andSp.textContent = '\\u2227';
+        row.appendChild(andSp);
+    } else {
+        var sp = document.createElement('span'); sp.style.minWidth='14px'; row.appendChild(sp);
+    }
+    row.appendChild(makeSelect('g'+gi+'_field'+ci, FIELD_OPTIONS));
+    row.appendChild(makeSelect('g'+gi+'_op'+ci,    OP_OPTIONS));
+    row.appendChild(makeInput ('g'+gi+'_val'+ci));
+    if (ci > 0) {
+        var del = document.createElement('button');
+        del.type = 'button'; del.className = 'del-btn'; del.textContent = '\\u00d7';
+        del.setAttribute('onclick', 'removeCond('+gi+','+ci+')');
+        row.appendChild(del);
+    }
+    return row;
+}
+function addGroup() {
+    var gi = groupCount++;
+    var container = document.getElementById('groups-container');
+    var div = document.createElement('div');
+    div.id = 'group-' + gi;
+    div.dataset.condCount = 1;
+    div.style.cssText = 'margin-bottom:10px;padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:6px;';
+    if (gi > 0) {
+        var orLbl = document.createElement('span');
+        orLbl.style.cssText = 'display:block;font-size:11px;font-weight:700;color:#f87171;font-family:monospace;margin-bottom:6px;';
+        orLbl.textContent = '\\u2228 OR';
+        div.appendChild(orLbl);
+    }
+    var condsDiv = document.createElement('div');
+    condsDiv.id = 'conds-' + gi;
+    condsDiv.appendChild(conditionHtml(gi, 0));
+    div.appendChild(condsDiv);
+    var actionsDiv = document.createElement('div');
+    actionsDiv.style.cssText = 'display:flex;gap:8px;margin-top:6px;';
+    var addBtn = document.createElement('button');
+    addBtn.type = 'button'; addBtn.textContent = '\\u2227 Afegir condici\\u00f3 AND';
+    addBtn.style.cssText = 'padding:5px 10px;font-size:11px;background:var(--bg);border:1px dashed var(--border2);color:var(--text-2);border-radius:4px;cursor:pointer;';
+    addBtn.setAttribute('onclick', 'addCond('+gi+')');
+    actionsDiv.appendChild(addBtn);
+    if (gi > 0) {
+        var rmBtn = document.createElement('button');
+        rmBtn.type = 'button'; rmBtn.className = 'del-btn'; rmBtn.textContent = '\\u00d7';
+        rmBtn.style.marginLeft = 'auto';
+        rmBtn.setAttribute('onclick', 'removeGroup('+gi+')');
+        actionsDiv.appendChild(rmBtn);
+    }
+    div.appendChild(actionsDiv);
+    container.appendChild(div);
+}
+function addCond(gi) {
+    var groupEl = document.getElementById('group-' + gi);
+    var ci = parseInt(groupEl.dataset.condCount);
+    groupEl.dataset.condCount = ci + 1;
+    document.getElementById('conds-' + gi).appendChild(conditionHtml(gi, ci));
+}
+function removeCond(gi, ci) { document.getElementById('cond-' + gi + '-' + ci).remove(); }
+function removeGroup(gi)    { document.getElementById('group-' + gi).remove(); }
+addGroup();
+<\/script>`;
+            }
+
+            const safeFieldOptions = fieldOptions || '<option value="">— afegeix inputs —</option>';
+            const safeOpOptions = '<option value=">=">&gt;=</option>'
+                + '<option value="<=">&lt;=</option>'
+                + '<option value=">">&gt;</option>'
+                + '<option value="<">&lt;</option>'
+                + '<option value="==">==</option>'
+                + '<option value="!=">!=</option>';
+            const clientScript = buildClientScript(safeFieldOptions, safeOpOptions);
 
             res.send(`<!DOCTYPE html>
 <html lang="ca">
@@ -485,6 +619,28 @@ app.get('/dashboard', (req, res) => {
         }
         .arrow { color: #f87171; }
         .rule-body strong { color: var(--green); }
+        .group-wrap {
+            display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap;
+            background: rgba(248,113,113,0.05);
+            border: 1px solid rgba(248,113,113,0.15);
+            border-radius: 4px;
+            padding: 2px 7px;
+        }
+        .logic-op {
+            font-family: var(--mono); font-size: 11px; font-weight: 700;
+            color: #f87171;
+            padding: 1px 5px;
+            border: 1px solid rgba(248,113,113,0.3);
+            border-radius: 3px;
+        }
+        .or-op { background: rgba(248,113,113,0.1); margin: 0 4px; }
+        .prio-badge {
+            font-family: var(--mono); font-size: 10px; font-weight: 700;
+            color: var(--amber); background: var(--amber-bg);
+            border: 1px solid var(--amber-bdr);
+            border-radius: 4px; padding: 2px 6px;
+            flex-shrink: 0; letter-spacing: 0.5px;
+        }
 
         /* ── INPUTS / SELECTS ── */
         input[type="text"], input[type="number"], select {
@@ -634,34 +790,34 @@ app.get('/dashboard', (req, res) => {
     <div class="section">
         <div class="section-head">
             <span class="section-title">Regles de preu</span>
-            <span class="section-hint">Guanya el major descompte si en coincideixen diverses</span>
         </div>
         <div class="section-body">
             ${ruleRows}
-            <form action="/add-rule" method="POST">
-                <div class="add-row" style="margin-top:10px; flex-wrap:wrap; gap:8px;">
-                    <span class="add-label">Si</span>
-                    <select name="field">
-                        ${fieldOptions || '<option value="">— afegeix inputs —</option>'}
-                    </select>
-                    <select name="operator">
-                        <option value=">=">&gt;=</option>
-                        <option value="<=">&lt;=</option>
-                        <option value=">">&gt;</option>
-                        <option value="<">&lt;</option>
-                        <option value="==">==</option>
-                        <option value="!=">!=</option>
-                    </select>
-                    <input type="text" name="value" placeholder="valor" style="width:110px;">
-                    <span class="add-label">→</span>
-                    <input type="number" name="discount" min="1" max="100" placeholder="%">
-                    <span class="add-label">%</span>
-                    <button type="submit" class="btn-add">Afegir regla</button>
+            <form action="/add-rule" method="POST" id="rule-form">
+                <div id="groups-container"></div>
+
+                <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
+                    <button type="button" onclick="addGroup()"
+                            style="padding:7px 14px; background:var(--surface); border:1px dashed var(--border2);
+                                   color:var(--text-2); font-size:12px; border-radius:5px; cursor:pointer;">
+                        ∨ Afegir grup OR
+                    </button>
+                    <div style="display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:wrap;">
+                        <span class="add-label" style="color:var(--amber);">Prioritat</span>
+                        <input type="number" name="priority" min="0" max="999" placeholder="0" style="width:60px;" title="Prioritat (major = s'aplica primer)">
+                        <span class="add-label" style="color:#f87171;">→</span>
+                        <input type="number" name="discount" min="1" max="100" placeholder="%">
+                        <span class="add-label">%</span>
+                        <button type="submit" class="btn-add">Afegir regla</button>
+                    </div>
                 </div>
                 <p style="font-size:11px; color:var(--text-3); margin-top:8px;">
-                    Exemple: playerClass == warrior → 15% · playerXP >= 1000 → 20%
+                    FND: cada grup és un AND de condicions (∧), entre grups hi ha un OR (∨).
+                    Ex: (xp &gt;= 1000 ∧ class == warrior) ∨ (region == CAT) → 20%
                 </p>
             </form>
+
+            ${clientScript}
         </div>
     </div>
 
@@ -763,24 +919,45 @@ app.get('/delete-field', (req, res) => {
 });
 
 // POST /add-rule
+// El formulari envia els camps amb prefix: g{gi}_field{ci}, g{gi}_op{ci}, g{gi}_val{ci}
+// El servidor reconstrueix l'estructura FND: { groups: [{conditions:[...]}, ...], discount }
 app.post('/add-rule', (req, res) => {
-    const { field, operator, value, discount } = req.body;
-    if (!field || !operator || value === undefined || !discount) return res.redirect('/dashboard');
+    const { discount } = req.body;
+    if (!discount) return res.redirect('/dashboard');
+
+    // Reconstruïm els grups llegint totes les claus del body amb prefix g{gi}_
+    const groups = [];
+    let gi = 0;
+    while (true) {
+        const conditions = [];
+        let ci = 0;
+        while (req.body[`g${gi}_field${ci}`]) {
+            const field = req.body[`g${gi}_field${ci}`].trim();
+            const op    = req.body[`g${gi}_op${ci}`];
+            const val   = (req.body[`g${gi}_val${ci}`] || "").trim();
+            if (field && op && val) conditions.push({ field, operator: op, value: val });
+            ci++;
+        }
+        if (conditions.length === 0) break;  // No hi ha més grups
+        groups.push({ conditions });
+        gi++;
+    }
+
+    if (groups.length === 0) return res.redirect('/dashboard');
 
     db.get("SELECT rules FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
         const rules = parseRules(row && row.rules);
-        rules.push({
-            field:    field.trim(),
-            operator: operator,
-            value:    value.trim(),
-            discount: parseFloat(discount) / 100   // 15 → 0.15
-        });
+        const priority = parseInt(req.body.priority) || 0;
+        rules.push({ groups, priority, discount: parseFloat(discount) / 100 });
         db.run(
             "UPDATE api_contract SET rules = ? WHERE endpoint = 'get-price'",
             [JSON.stringify(rules)],
             (err) => {
                 if (err) console.error(err);
-                console.log(`Nova regla: si ${field} ${operator} ${value} → ${discount}% descompte`);
+                const fndStr = groups
+                    .map(g => '(' + g.conditions.map(c => `${c.field} ${c.operator} ${c.value}`).join(' ∧ ') + ')')
+                    .join(' ∨ ');
+                console.log(`Nova regla FND: ${fndStr} → ${discount}%`);
                 res.redirect('/dashboard');
             }
         );
