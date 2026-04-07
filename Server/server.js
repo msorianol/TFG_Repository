@@ -16,10 +16,8 @@ let debugSimulatedIp = "84.88.1.1";
 // Permet que el servidor arrenqui sense errors encara
 // que la DB sigui antiga i no tingui aquesta columna.
 // ------------------------------------
-db.run("ALTER TABLE api_contract ADD COLUMN rules TEXT DEFAULT '[]'", () => {
-    // Si ja existia, SQLite llança un error que ignoram silenciosament.
-    // Si no existia, l'acaba de crear amb array buit per defecte.
-});
+db.run("ALTER TABLE api_contract ADD COLUMN rules TEXT DEFAULT '[]'", () => {});
+db.run("ALTER TABLE api_contract ADD COLUMN event_discounts TEXT DEFAULT '[]'", () => {});
 
 // ------------------------------------
 //  HELPERS
@@ -44,6 +42,42 @@ function activeNames(fields) {
 function parseRules(raw) {
     if (!raw) return [];
     try { return JSON.parse(raw); } catch (e) { return []; }
+}
+
+function parseEventDiscounts(raw) {
+    if (!raw) return [];
+    try { return JSON.parse(raw); } catch (e) { return []; }
+}
+
+// Comprova si una data (now) cau dins d'un descompte d'esdeveniment.
+// Suporta: rang de dates (pot creuar any nou) i dia exacte.
+// El filtre de país és opcional: si és buit, aplica a tothom.
+function applyEventDiscounts(eventDiscounts, region, now) {
+    const curMMDD = (now.getMonth() + 1) * 100 + now.getDate();
+
+    const matched = eventDiscounts.filter(ed => {
+        // Filtre de país
+        if (ed.country && ed.country !== region) return false;
+
+        if (ed.type === 'day') {
+            // Dia exacte: mes i dia han de coincidir
+            return curMMDD === ed.month * 100 + ed.day;
+        } 
+        else {
+            // Rang de dates
+            const startMMDD = ed.startMonth * 100 + ed.startDay;
+            const endMMDD   = ed.endMonth   * 100 + ed.endDay;
+            // Si el rang creua any nou (ex: 25/12 → 7/1)
+            return startMMDD <= endMMDD
+                ? curMMDD >= startMMDD && curMMDD <= endMMDD
+                : curMMDD >= startMMDD || curMMDD <= endMMDD;
+        }
+    });
+
+    if (matched.length === 0) return 0;
+    const best = matched.reduce((a, b) => a.discount > b.discount ? a : b);
+    console.log(`🎉 Descompte d'esdeveniment: ${best.name} → ${best.discount * 100}%`);
+    return best.discount;
 }
 
 // ------------------------------------
@@ -80,28 +114,25 @@ function evalCondition({ field, operator, value }, data) {
 
 // Motor FND: OR de grups (clàusules AND).
 function applyRules(rules, data) {
-    // Filtrem les regles que compleixen la condició FND
-    const matched = rules.filter(rule =>
-        rule.groups.some(group => group.conditions.every(c => evalCondition(c, data)))
-    );
+    let bestDiscount = 0;
 
-    if (matched.length === 0) return 0;
+    for (const rule of rules) {
+        // FND: la regla és certa si ALGUN grup és cert (OR)
+        // Un grup és cert si TOTES les seves condicions ho són (AND)
+        const match = rule.groups.some(
+            group => group.conditions.every(c => evalCondition(c, data))
+        );
 
-    // Ordenem per prioritat descendent (major prioritat primer).
-    // En cas d'empat de prioritat, guanya el major descompte.
-    matched.sort((a, b) => {
-        const pa = a.priority ?? 0;
-        const pb = b.priority ?? 0;
-        return pb !== pa ? pb - pa : (b.discount - a.discount);
-    });
-
-    const winner = matched[0];
-    const fndStr = winner.groups
-        .map(g => '(' + g.conditions.map(c => `${c.field} ${c.operator} ${c.value}`).join(' ∧ ') + ')')
-        .join(' ∨ ');
-    console.log(`✅ Regla guanyadora [prioritat ${winner.priority ?? 0}]: ${fndStr} → ${winner.discount * 100}%`);
-
-    return parseFloat(winner.discount) || 0;
+        if (match) {
+            const d = parseFloat(rule.discount) || 0;
+            if (d > bestDiscount) bestDiscount = d;
+            const fndStr = rule.groups
+                .map(g => '(' + g.conditions.map(c => `${c.field} ${c.operator} ${c.value}`).join(' ∧ ') + ')')
+                .join(' ∨ ');
+            console.log(`✅ Regla aplicada: ${fndStr} → ${d * 100}%`);
+        }
+    }
+    return bestDiscount;
 }
 
 
@@ -135,6 +166,7 @@ app.post('/api/get-price', (req, res) => {
         const allowedInputs  = activeNames(parseFields(contract && contract.inputs));
         const allowedOutputs = activeNames(parseFields(contract && contract.outputs));
         const rules          = parseRules(contract && contract.rules);
+        const eventDiscounts = parseEventDiscounts(contract && contract.event_discounts);
 
         // 1. Recollim tots els inputs que Unity ha enviat i el contracte permet
         let receivedData = {};
@@ -160,9 +192,11 @@ app.post('/api/get-price', (req, res) => {
             }
         }
 
-        // 3. Apliquem el motor de regles
-        const discount = applyRules(rules, receivedData);
-        if (discount > 0) console.log(`💰 Descompte total aplicat: ${discount * 100}%`);
+        // 3. Apliquem el motor de regles i els descomptes d'esdeveniments
+        const rulesDiscount = applyRules(rules, receivedData);
+        const eventDiscount = applyEventDiscounts(eventDiscounts, region, new Date());
+        const discount      = Math.max(rulesDiscount, eventDiscount);
+        if (discount > 0) console.log(`💰 Descompte final aplicat: ${discount * 100}%`);
 
         // 4. Consulta a la DB i resposta
         db.get("SELECT * FROM shop_prices WHERE item_id = ? AND region = ?", [itemId, region], (err, row) => {
@@ -190,9 +224,10 @@ app.get('/dashboard', (req, res) => {
     db.get("SELECT * FROM api_contract WHERE endpoint = 'get-price'", (err, contract) => {
         db.get("SELECT name FROM events WHERE id = 1", (err, currentEvent) => {
 
-            const inputs  = parseFields(contract && contract.inputs)  || [{ name: "itemId", active: true }];
-            const outputs = parseFields(contract && contract.outputs) || [{ name: "price",  active: true }];
-            const rules   = parseRules(contract && contract.rules);
+            const inputs         = parseFields(contract && contract.inputs)  || [{ name: "itemId", active: true }];
+            const outputs        = parseFields(contract && contract.outputs) || [{ name: "price",  active: true }];
+            const rules          = parseRules(contract && contract.rules);
+            const eventDiscounts = parseEventDiscounts(contract && contract.event_discounts);
             const activeEventName = currentEvent ? currentEvent.name.toUpperCase() : "UNKNOWN";
 
             const geoSim    = geoip.lookup(debugSimulatedIp);
@@ -232,10 +267,8 @@ app.get('/dashboard', (req, res) => {
                             <span class="group-wrap">(${condsHtml})</span>`;
                     }).join('');
 
-                    const prio = rule.priority ?? 0;
                     return `
                     <div class="rule-row">
-                        <span class="prio-badge" title="Prioritat">P${prio}</span>
                         <span class="rule-body">
                             ${groupsHtml}
                             <span class="arrow">→</span>
@@ -252,9 +285,35 @@ app.get('/dashboard', (req, res) => {
                 `<option value="${f.name}">${f.name}${f.active ? '' : ' (inactiu)'}</option>`
             ).join('');
 
-            const inputRows  = renderFieldRows(inputs,  'in');
-            const outputRows = renderFieldRows(outputs, 'out');
-            const ruleRows   = renderRules(rules);
+            // Renderitza la llista de descomptes d'esdeveniments
+            function renderEventDiscounts(eds) {
+                if (eds.length === 0) return `<p class="empty">Cap descompte d'esdeveniment definit.</p>`;
+                return eds.map((ed, i) => {
+                    const dateStr = ed.type === 'day'
+                        ? `${String(ed.day).padStart(2,'0')}/${String(ed.month).padStart(2,'0')}`
+                        : `${String(ed.startDay).padStart(2,'0')}/${String(ed.startMonth).padStart(2,'0')} → ${String(ed.endDay).padStart(2,'0')}/${String(ed.endMonth).padStart(2,'0')}`;
+                    const countryStr = ed.country ? ed.country : 'Tots els països';
+                    return `
+                    <div class="rule-row" style="background:rgba(96,165,250,0.07); border-color:rgba(96,165,250,0.2);">
+                        <span class="prio-badge" style="color:#60a5fa; background:rgba(96,165,250,0.1); border-color:rgba(96,165,250,0.3);">${Math.round(ed.discount * 100)}%</span>
+                        <span class="rule-body">
+                            <strong style="color:#e2e4e9;">${ed.name}</strong>
+                            <span class="arrow">·</span>
+                            <code>${dateStr}</code>
+                            <span class="arrow">·</span>
+                            <span style="color:var(--text-2); font-size:12px;">${countryStr}</span>
+                        </span>
+                        <a href="/delete-event-discount?index=${i}"
+                           onclick="return confirm('Eliminar aquest descompte?')"
+                           class="del-btn" title="Eliminar">×</a>
+                    </div>`;
+                }).join('');
+            }
+
+            const inputRows        = renderFieldRows(inputs,  'in');
+            const outputRows       = renderFieldRows(outputs, 'out');
+            const ruleRows         = renderRules(rules);
+            const eventDiscountRows = renderEventDiscounts(eventDiscounts);
 
             // clientScript: s'injecta directament al HTML.
             // El codi del client usa createElement per evitar template literals
@@ -634,13 +693,6 @@ addGroup();
             border-radius: 3px;
         }
         .or-op { background: rgba(248,113,113,0.1); margin: 0 4px; }
-        .prio-badge {
-            font-family: var(--mono); font-size: 10px; font-weight: 700;
-            color: var(--amber); background: var(--amber-bg);
-            border: 1px solid var(--amber-bdr);
-            border-radius: 4px; padding: 2px 6px;
-            flex-shrink: 0; letter-spacing: 0.5px;
-        }
 
         /* ── INPUTS / SELECTS ── */
         input[type="text"], input[type="number"], select {
@@ -790,6 +842,7 @@ addGroup();
     <div class="section">
         <div class="section-head">
             <span class="section-title">Regles de preu</span>
+            <span class="section-hint">Guanya el major descompte si en coincideixen diverses</span>
         </div>
         <div class="section-body">
             ${ruleRows}
@@ -802,9 +855,7 @@ addGroup();
                                    color:var(--text-2); font-size:12px; border-radius:5px; cursor:pointer;">
                         ∨ Afegir grup OR
                     </button>
-                    <div style="display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:wrap;">
-                        <span class="add-label" style="color:var(--amber);">Prioritat</span>
-                        <input type="number" name="priority" min="0" max="999" placeholder="0" style="width:60px;" title="Prioritat (major = s'aplica primer)">
+                    <div style="display:flex; align-items:center; gap:8px; margin-left:auto;">
                         <span class="add-label" style="color:#f87171;">→</span>
                         <input type="number" name="discount" min="1" max="100" placeholder="%">
                         <span class="add-label">%</span>
@@ -818,6 +869,70 @@ addGroup();
             </form>
 
             ${clientScript}
+        </div>
+    </div>
+
+    <!-- ══ DESCOMPTES PER ESDEVENIMENTS ══ -->
+    <div class="section">
+        <div class="section-head">
+            <span class="section-title">Descomptes per Esdeveniments i País</span>
+            <span class="section-hint">Per data o rang de dates · País opcional</span>
+        </div>
+        <div class="section-body">
+            ${eventDiscountRows}
+            <form action="/add-event-discount" method="POST">
+                <div class="add-row" style="margin-top:10px; flex-wrap:wrap; gap:8px; align-items:center;">
+                    <span class="add-label">Nom</span>
+                    <input type="text" name="name" placeholder="ex: Nadal" style="width:100px;">
+                    <span class="add-label">Tipus</span>
+                    <select name="type" onchange="toggleEventType(this.value)"
+                            style="min-width:120px;">
+                        <option value="range">Rang de dates</option>
+                        <option value="day">Dia exacte</option>
+                    </select>
+                </div>
+                <!-- Rang de dates -->
+                <div id="ev-range" class="add-row" style="margin-top:6px; flex-wrap:wrap; gap:8px; align-items:center;">
+                    <span class="add-label">Inici</span>
+                    <input type="number" name="startDay"   min="1" max="31" placeholder="DD" style="width:55px;">
+                    <span class="add-label">/</span>
+                    <input type="number" name="startMonth" min="1" max="12" placeholder="MM" style="width:55px;">
+                    <span class="add-label" style="margin-left:8px;">Fi</span>
+                    <input type="number" name="endDay"     min="1" max="31" placeholder="DD" style="width:55px;">
+                    <span class="add-label">/</span>
+                    <input type="number" name="endMonth"   min="1" max="12" placeholder="MM" style="width:55px;">
+                </div>
+                <!-- Dia exacte (ocult per defecte) -->
+                <div id="ev-day" class="add-row" style="display:none; margin-top:6px; flex-wrap:wrap; gap:8px; align-items:center;">
+                    <span class="add-label">Dia</span>
+                    <input type="number" name="day"   min="1" max="31" placeholder="DD" style="width:55px;">
+                    <span class="add-label">/</span>
+                    <input type="number" name="month" min="1" max="12" placeholder="MM" style="width:55px;">
+                </div>
+                <div class="add-row" style="margin-top:6px; flex-wrap:wrap; gap:8px; align-items:center;">
+                    <span class="add-label">País</span>
+                    <select name="country">
+                        <option value="">Tots els països</option>
+                        <option value="CAT">Catalunya (CAT)</option>
+                        <option value="US">Estats Units (US)</option>
+                        <option value="JP">Japó (JP)</option>
+                    </select>
+                    <span class="add-label" style="margin-left:8px; color:#f87171;">→ Descompte</span>
+                    <input type="number" name="discount" min="1" max="100" placeholder="%" style="width:65px;">
+                    <span class="add-label">%</span>
+                    <button type="submit" class="btn-add" style="margin-left:auto;">Afegir descompte</button>
+                </div>
+                <p style="font-size:11px; color:var(--text-3); margin-top:8px;">
+                    Ex: Nadal · rang 25/12 → 07/01 · Tots els països · 20%
+                    &nbsp;·&nbsp; Sant Jordi · dia exacte 23/04 · CAT · 15%
+                </p>
+            </form>
+            <script>
+            function toggleEventType(val) {
+                document.getElementById('ev-range').style.display = val === 'range' ? 'flex' : 'none';
+                document.getElementById('ev-day').style.display   = val === 'day'   ? 'flex' : 'none';
+            }
+            </script>
         </div>
     </div>
 
@@ -947,8 +1062,7 @@ app.post('/add-rule', (req, res) => {
 
     db.get("SELECT rules FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
         const rules = parseRules(row && row.rules);
-        const priority = parseInt(req.body.priority) || 0;
-        rules.push({ groups, priority, discount: parseFloat(discount) / 100 });
+        rules.push({ groups, discount: parseFloat(discount) / 100 });
         db.run(
             "UPDATE api_contract SET rules = ? WHERE endpoint = 'get-price'",
             [JSON.stringify(rules)],
@@ -1000,6 +1114,55 @@ app.post('/debug/set-ip', (req, res) => {
     res.redirect('/dashboard');
 });
 
+
+// POST /add-event-discount
+app.post('/add-event-discount', (req, res) => {
+    const { name, type, startDay, startMonth, endDay, endMonth, day, month, country, discount } = req.body;
+    if (!name || !discount) return res.redirect('/dashboard');
+
+    const entry = { name: name.trim(), type, country: country || '', discount: parseFloat(discount) / 100 };
+
+    if (type === 'day') {
+        entry.day   = parseInt(day);
+        entry.month = parseInt(month);
+    } else {
+        entry.startDay   = parseInt(startDay);
+        entry.startMonth = parseInt(startMonth);
+        entry.endDay     = parseInt(endDay);
+        entry.endMonth   = parseInt(endMonth);
+    }
+
+    db.get("SELECT event_discounts FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
+        const eds = parseEventDiscounts(row && row.event_discounts);
+        eds.push(entry);
+        db.run(
+            "UPDATE api_contract SET event_discounts = ? WHERE endpoint = 'get-price'",
+            [JSON.stringify(eds)],
+            (err) => {
+                if (err) console.error(err);
+                console.log(`🎉 Nou descompte: ${name} → ${discount}% (${country || 'tots'})`);
+                res.redirect('/dashboard');
+            }
+        );
+    });
+});
+
+// GET /delete-event-discount
+app.get('/delete-event-discount', (req, res) => {
+    const index = parseInt(req.query.index);
+    db.get("SELECT event_discounts FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
+        let eds = parseEventDiscounts(row && row.event_discounts);
+        if (!isNaN(index) && index >= 0 && index < eds.length) {
+            const deleted = eds.splice(index, 1);
+            console.log(`🗑️ Descompte eliminat: ${JSON.stringify(deleted[0])}`);
+        }
+        db.run(
+            "UPDATE api_contract SET event_discounts = ? WHERE endpoint = 'get-price'",
+            [JSON.stringify(eds)],
+            () => res.redirect('/dashboard')
+        );
+    });
+});
 
 // ------------------------------------
 //  INICI

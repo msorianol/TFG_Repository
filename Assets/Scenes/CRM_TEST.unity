@@ -686,7 +686,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::Server.PlayerData.PlayerData
   itemId: 
   playerLevel: 0
-  playerXP: 100
+  playerXP: 0
   playerClass: 
   daysPlayed: 0
 --- !u!4 &780894846
