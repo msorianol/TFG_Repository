@@ -1,66 +1,109 @@
-﻿using Server;
+﻿using System.Collections.Generic;
+using Server;
+using Server.Data;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
-public class CanvasController : MonoBehaviour
+namespace Canvas
 {
-    [Header("TEXTS")] [SerializeField] private TMP_Text swordPriceText;
-    [SerializeField] private TMP_Text shieldPriceText;
-
-    [Header("BACKGROUND & IMAGES")] [SerializeField]
-    private Image shopBackgroundImage;
-
-    [SerializeField] private Sprite normalShopImage;
-    [SerializeField] private Sprite christmasShopImage;
-    [SerializeField] private Sprite santJordiShopImage;
-
-    private void OnEnable()
+    public class CanvasController : MonoBehaviour
     {
-        CRM_Manager.OnPriceUpdated += UpdatePriceUI;
-        CRM_Manager.OnEventUpdated += UpdateBackgroundImage;
-    }
+        [Header("DYNAMIC ITEMS")]
+        [SerializeField] private Transform itemsContainer;
+        [SerializeField] private ShopItemUI itemPrefab; 
+        [SerializeField] private List<ItemDisplayData> localItemsDatabase;
+    
+        private Dictionary<string, ShopItemUI> activeSeasonalItems = new Dictionary<string, ShopItemUI>();
 
-    private void OnDisable()
-    {
-        CRM_Manager.OnPriceUpdated -= UpdatePriceUI;
-        CRM_Manager.OnEventUpdated -= UpdateBackgroundImage;
-    }
+        [Header("BACKGROUND & IMAGES")] 
+        [SerializeField] private Image shopBackgroundImage;
+        [SerializeField] private Sprite normalShopImage;
+        [SerializeField] private Sprite christmasShopImage;
+        [SerializeField] private Sprite santJordiShopImage;
 
-    private void UpdatePriceUI(string itemId, float price, string currency)
-    {
-        string symbol = currency;
-        if (currency == "EUR") symbol = "€";
-        if (currency == "USD") symbol = "$";
-        if (currency == "JPY") symbol = "¥";
-
-        string priceString;
-        if (currency == "JPY") priceString = price.ToString("0") + " " + symbol;
-        else priceString = price.ToString("0.00") + " " + symbol;
-
-        if (itemId == "sword")
+        private void OnEnable()
         {
-            swordPriceText.text = priceString;
+            CRM_Manager.OnPriceUpdated += UpdatePriceUI;
+            CRM_Manager.OnEventUpdated += UpdateBackgroundImage;
+            CRM_Manager.OnShopItemsUpdated += UpdateSeasonalItemsUI;
         }
-        else if (itemId == "shield")
-        {
-            shieldPriceText.text = priceString;
-        }
-    }
 
-    private void UpdateBackgroundImage(string eventName)
-    {
-        if (eventName == "christmas")
+        private void OnDisable()
         {
-            shopBackgroundImage.sprite = christmasShopImage;
+            CRM_Manager.OnPriceUpdated -= UpdatePriceUI;
+            CRM_Manager.OnEventUpdated -= UpdateBackgroundImage;
+            CRM_Manager.OnShopItemsUpdated -= UpdateSeasonalItemsUI;
         }
-        else if (eventName == "sant_jordi")
+    
+        private void UpdateSeasonalItemsUI(string[] activeItemIds)
         {
-            shopBackgroundImage.sprite = santJordiShopImage;
+            List<string> toRemove = new List<string>();
+        
+            foreach (var activeUI in activeSeasonalItems)
+            {
+                if (System.Array.IndexOf(activeItemIds, activeUI.Key) == -1)
+                {
+                    Destroy(activeUI.Value.gameObject);
+                    toRemove.Add(activeUI.Key);
+                }
+            }
+
+            foreach (var key in toRemove)
+            {
+                activeSeasonalItems.Remove(key);
+            }
+
+            foreach (string itemId in activeItemIds)
+            {
+                if (!activeSeasonalItems.ContainsKey(itemId))
+                {
+                    ItemDisplayData data = localItemsDatabase.Find(x => x.itemId == itemId);
+                    if (data != null)
+                    {
+                        ShopItemUI newUI = Instantiate(itemPrefab, itemsContainer);
+                        newUI.Setup(data);
+                        activeSeasonalItems.Add(itemId, newUI);
+                    }
+                    else
+                    {
+                        Debug.LogWarning("Ítem actiu al servidor però no trobat a la base de dades local: " + itemId);
+                    }
+                }
+            }
         }
-        else
+
+        private void UpdatePriceUI(string itemId, float price, string currency)
         {
-            shopBackgroundImage.sprite = normalShopImage;
+            string symbol = currency;
+            if (currency == "EUR") symbol = "€";
+            if (currency == "USD") symbol = "$";
+            if (currency == "JPY") symbol = "¥";
+
+            string priceString;
+            if (currency == "JPY") priceString = price.ToString("0") + " " + symbol;
+            else priceString = price.ToString("0.00") + " " + symbol;
+            
+            if (activeSeasonalItems.ContainsKey(itemId))
+            {
+                activeSeasonalItems[itemId].UpdatePrice(priceString);
+            }
+        }
+
+        private void UpdateBackgroundImage(string eventName)
+        {
+            if (eventName == "christmas")
+            {
+                shopBackgroundImage.sprite = christmasShopImage;
+            }
+            else if (eventName == "sant_jordi")
+            {
+                shopBackgroundImage.sprite = santJordiShopImage;
+            }
+            else
+            {
+                shopBackgroundImage.sprite = normalShopImage;
+            }
         }
     }
 }

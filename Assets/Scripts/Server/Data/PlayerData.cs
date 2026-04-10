@@ -1,7 +1,7 @@
 ﻿using System.Collections.Generic;
 using UnityEngine;
 
-namespace Server.PlayerData
+namespace Server.Data
 {
     public class PlayerData : MonoBehaviour
     {

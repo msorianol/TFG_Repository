@@ -1,7 +1,7 @@
-const express  = require("express");
-const sqlite3  = require("sqlite3").verbose();
+const express = require("express");
+const sqlite3 = require("sqlite3").verbose();
 const bodyParser = require("body-parser");
-const geoip    = require('geoip-lite');
+const geoip = require('geoip-lite');
 
 const app = express();
 app.use(bodyParser.json());
@@ -12,12 +12,61 @@ const db = new sqlite3.Database("./game_data.db");
 let debugSimulatedIp = "84.88.1.1";
 
 // ------------------------------------
-// INIT DB: Afegim la columna 'rules' si no existeix.
-// Permet que el servidor arrenqui sense errors encara
-// que la DB sigui antiga i no tingui aquesta columna.
+// INIT DB: Creació i migració de taules
 // ------------------------------------
-db.run("ALTER TABLE api_contract ADD COLUMN rules TEXT DEFAULT '[]'", () => {});
-db.run("ALTER TABLE api_contract ADD COLUMN event_discounts TEXT DEFAULT '[]'", () => {});
+db.serialize(() => {
+    // 1. Creem les taules principals si és el primer cop que s'engega el servidor
+    db.run(`CREATE TABLE IF NOT EXISTS api_contract (
+        endpoint TEXT PRIMARY KEY,
+        inputs TEXT DEFAULT '[]',
+        outputs TEXT DEFAULT '[]',
+        rules TEXT DEFAULT '[]',
+        event_discounts TEXT DEFAULT '[]',
+        seasonal_items TEXT DEFAULT '[]',
+        decorations TEXT DEFAULT '[]'
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY,
+        name TEXT,
+        message TEXT,
+        color TEXT
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS shop_prices (
+        item_id TEXT,
+        region TEXT,
+        price REAL,
+        currency TEXT,
+        PRIMARY KEY (item_id, region)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS regions (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        countries TEXT DEFAULT '[]',
+        currency TEXT DEFAULT 'EUR',
+        is_default INTEGER DEFAULT 0
+    )`);
+
+    // 2. Inserim la configuració base per defecte perquè el Dashboard no falli
+    db.run(`INSERT OR IGNORE INTO api_contract (endpoint, inputs, outputs)
+            VALUES ('get-price', 
+            '[{"name":"itemId","active":true}]', 
+            '[{"name":"price","active":true}, {"name":"currency","active":true}]')`);
+
+    db.run(`INSERT OR IGNORE INTO events (id, name, message, color)
+            VALUES (1, 'normal', 'Benvingut', '#FFFFFF')`);
+
+    // 3. Migracions (per si la base de dades ja existia en una versió antiga)
+    const addColumn = (col) => {
+        db.run(`ALTER TABLE api_contract ADD COLUMN ${col} TEXT DEFAULT '[]'`, () => { /* Silenci si ja existeix */ });
+    };
+    addColumn('rules');
+    addColumn('event_discounts');
+    addColumn('seasonal_items');
+    addColumn('decorations');
+});
 
 // ------------------------------------
 //  HELPERS
@@ -38,101 +87,101 @@ function activeNames(fields) {
     return fields.filter(f => f.active).map(f => f.name);
 }
 
-// Llegeix les regles de la DB
-function parseRules(raw) {
+// Parser genèric per a totes les llistes JSON de la DB
+function parseJSON(raw) {
     if (!raw) return [];
     try { return JSON.parse(raw); } catch (e) { return []; }
 }
+const parseRules = parseJSON;
+const parseEventDiscounts = parseJSON;
+const parseSeasonalItems = parseJSON;
+const parseDecorations = parseJSON;
 
-function parseEventDiscounts(raw) {
-    if (!raw) return [];
-    try { return JSON.parse(raw); } catch (e) { return []; }
+// ------------------------------------
+// HELPER DE DATES — reutilitzat pels tres sistemes de temporada
+// ------------------------------------
+
+function geoMatchesCountry(geo, code) {
+    if (code === '*') return true;
+    const parts = code.split(':');
+    if (parts.length === 2) return geo.country === parts[0] && geo.region === parts[1];
+    return geo.country === code;
 }
 
-// Comprova si una data (now) cau dins d'un descompte d'esdeveniment.
-// Suporta: rang de dates (pot creuar any nou) i dia exacte.
-// El filtre de país és opcional: si és buit, aplica a tothom.
-function applyEventDiscounts(eventDiscounts, region, now) {
-    const curMMDD = (now.getMonth() + 1) * 100 + now.getDate();
+function detectRegion(geo, regions) {
+    if (!geo || !regions || !regions.length) return 'US';
+    for (const r of regions.filter(r => !r.is_default)) {
+        const codes = parseJSON(r.countries);
+        if (codes.some(c => geoMatchesCountry(geo, c))) return r.id;
+    }
+    const def = regions.find(r => r.is_default);
+    return def ? def.id : (regions[0] ? regions[0].id : 'US');
+}
 
-    const matched = eventDiscounts.filter(ed => {
-        // Filtre de país
-        if (ed.country && ed.country !== region) return false;
-
-        if (ed.type === 'day') {
-            // Dia exacte: mes i dia han de coincidir
-            return curMMDD === ed.month * 100 + ed.day;
-        } 
-        else {
-            // Rang de dates
-            const startMMDD = ed.startMonth * 100 + ed.startDay;
-            const endMMDD   = ed.endMonth   * 100 + ed.endDay;
-            // Si el rang creua any nou (ex: 25/12 → 7/1)
-            return startMMDD <= endMMDD
-                ? curMMDD >= startMMDD && curMMDD <= endMMDD
-                : curMMDD >= startMMDD || curMMDD <= endMMDD;
-        }
+function getRegionForReq(req, cb) {
+    db.all('SELECT * FROM regions', (err, regions) => {
+        regions = regions || [];
+        let ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+        if (ip.includes('127.0.0.1') || ip.includes('::1')) ip = debugSimulatedIp;
+        const geo = geoip.lookup(ip);
+        cb(detectRegion(geo, regions), regions);
     });
+}
 
-    if (matched.length === 0) return 0;
-    const best = matched.reduce((a, b) => a.discount > b.discount ? a : b);
-    console.log(`🎉 Descompte d'esdeveniment: ${best.name} → ${best.discount * 100}%`);
-    return best.discount;
+function isActiveNow(entry, region, now) {
+    if (entry.activeRegions && entry.activeRegions.length > 0) {
+        if (!entry.activeRegions.includes(region)) return false;
+    } else if (entry.country && entry.country !== region) {
+        return false;
+    }
+    const cur = (now.getMonth() + 1) * 100 + now.getDate();
+    if (entry.type === 'day') return cur === entry.month * 100 + entry.day;
+    const s = entry.startMonth * 100 + entry.startDay;
+    const e = entry.endMonth * 100 + entry.endDay;
+    return s <= e ? cur >= s && cur <= e : cur >= s || cur <= e;
 }
 
 // ------------------------------------
-// MOTOR DE REGLES — Forma Normal Disjuntiva (FND)
-//
-// Estructura d'una regla:
-//   { groups: [ { conditions: [{field, operator, value}, ...] }, ... ], discount }
-//
-// Avaluació: OR entre grups, AND dins de cada grup.
-//   (A ∧ B) ∨ (C ∧ D)  →  group0.every() || group1.every()
-//
-// Si múltiples regles apliquen, s'usa el MAJOR descompte.
+// MOTOR DE REGLES — FND + prioritat
 // ------------------------------------
-
-// Avalua una sola condició atòmica contra les dades rebudes.
 function evalCondition({ field, operator, value }, data) {
     const rawVal = data[field];
     if (rawVal === undefined || rawVal === null || rawVal === "") return false;
-
     const isNumeric = !isNaN(rawVal) && !isNaN(value);
-    const fv = isNumeric ? parseFloat(rawVal)  : String(rawVal).trim().toLowerCase();
-    const rv = isNumeric ? parseFloat(value)   : String(value).trim().toLowerCase();
-
+    const fv = isNumeric ? parseFloat(rawVal) : String(rawVal).trim().toLowerCase();
+    const rv = isNumeric ? parseFloat(value) : String(value).trim().toLowerCase();
     const ops = {
         ">=": () => isNumeric && fv >= rv,
         "<=": () => isNumeric && fv <= rv,
-        ">":  () => isNumeric && fv >  rv,
-        "<":  () => isNumeric && fv <  rv,
+        ">": () => isNumeric && fv > rv,
+        "<": () => isNumeric && fv < rv,
         "==": () => fv == rv,
         "!=": () => fv != rv,
     };
     return ops[operator]?.() ?? false;
 }
 
-// Motor FND: OR de grups (clàusules AND).
 function applyRules(rules, data) {
-    let bestDiscount = 0;
+    const matched = rules.filter(r =>
+        r.groups.some(g => g.conditions.every(c => evalCondition(c, data)))
+    );
+    if (matched.length === 0) return 0;
+    matched.sort((a, b) => {
+        const pa = a.priority ?? 0, pb = b.priority ?? 0;
+        return pb !== pa ? pb - pa : b.discount - a.discount;
+    });
+    const w = matched[0];
+    const s = w.groups.map(g => '(' + g.conditions.map(c => c.field + ' ' + c.operator + ' ' + c.value).join(' ∧ ') + ')').join(' ∨ ');
+    console.log('✅ Regla [P' + (w.priority ?? 0) + ']: ' + s + ' → ' + (w.discount * 100) + '%');
+    return parseFloat(w.discount) || 0;
+}
 
-    for (const rule of rules) {
-        // FND: la regla és certa si ALGUN grup és cert (OR)
-        // Un grup és cert si TOTES les seves condicions ho són (AND)
-        const match = rule.groups.some(
-            group => group.conditions.every(c => evalCondition(c, data))
-        );
-
-        if (match) {
-            const d = parseFloat(rule.discount) || 0;
-            if (d > bestDiscount) bestDiscount = d;
-            const fndStr = rule.groups
-                .map(g => '(' + g.conditions.map(c => `${c.field} ${c.operator} ${c.value}`).join(' ∧ ') + ')')
-                .join(' ∨ ');
-            console.log(`✅ Regla aplicada: ${fndStr} → ${d * 100}%`);
-        }
-    }
-    return bestDiscount;
+function applyEventDiscounts(eds, region, now) {
+    const matched = eds.filter(ed => isActiveNow(ed, region, now));
+    if (matched.length === 0) return 0;
+    const best = matched.reduce((a, b) => a.discount > b.discount ? a : b);
+    console.log('🎉 Esdeveniment: ' + best.name + ' → ' + (best.discount * 100) + '%');
+    return best.discount;
 }
 
 
@@ -142,7 +191,7 @@ function applyRules(rules, data) {
 
 // GET /api/get-event
 app.get('/api/get-event', (req, res) => {
-    db.get("SELECT name, message, color FROM events WHERE id = 1", (err, row) => {
+    db.get("SELECT name, message FROM events WHERE id = 1", (err, row) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(row);
     });
@@ -158,14 +207,38 @@ app.get('/api/get-contract', (req, res) => {
     });
 });
 
+// GET /api/get-shop
+app.get('/api/get-shop', (req, res) => {
+    db.get("SELECT seasonal_items FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        const all = parseSeasonalItems(row && row.seasonal_items);
+        getRegionForReq(req, (region) => {
+            const active = all.filter(it => isActiveNow(it, region, new Date())).map(it => it.itemId);
+            res.json({ items: active });
+        });
+    });
+});
+
+// GET /api/get-decorations
+app.get('/api/get-decorations', (req, res) => {
+    db.get("SELECT decorations FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        const all = parseDecorations(row && row.decorations);
+        getRegionForReq(req, (region) => {
+            const active = all.filter(dc => isActiveNow(dc, region, new Date())).map(dc => dc.decorationId);
+            res.json({ decorations: active });
+        });
+    });
+});
+
 // POST /api/get-price
 // Calcula el preu final aplicant geolocalització i les regles actives.
 app.post('/api/get-price', (req, res) => {
     db.get("SELECT * FROM api_contract WHERE endpoint = 'get-price'", (err, contract) => {
 
-        const allowedInputs  = activeNames(parseFields(contract && contract.inputs));
+        const allowedInputs = activeNames(parseFields(contract && contract.inputs));
         const allowedOutputs = activeNames(parseFields(contract && contract.outputs));
-        const rules          = parseRules(contract && contract.rules);
+        const rules = parseRules(contract && contract.rules);
         const eventDiscounts = parseEventDiscounts(contract && contract.event_discounts);
 
         // 1. Recollim tots els inputs que Unity ha enviat i el contracte permet
@@ -177,41 +250,43 @@ app.post('/api/get-price', (req, res) => {
 
         const itemId = req.body.itemId || "unknown";
 
-        // 2. Detecció de regió
-        let region = "US";
-        if (allowedInputs.includes("region") && receivedData.region) {
-            region = receivedData.region;
-        } else {
-            let ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-            if (ip.includes('127.0.0.1') || ip.includes('::1')) ip = debugSimulatedIp;
-            const geo = geoip.lookup(ip);
-            if (geo) {
-                if      (geo.country === "ES" && geo.region === "CT") region = "CAT";
-                else if (geo.country === "JP") region = "JP";
-                else    region = "US";
-            }
-        }
-
-        // 3. Apliquem el motor de regles i els descomptes d'esdeveniments
-        const rulesDiscount = applyRules(rules, receivedData);
-        const eventDiscount = applyEventDiscounts(eventDiscounts, region, new Date());
-        const discount      = Math.max(rulesDiscount, eventDiscount);
-        if (discount > 0) console.log(`💰 Descompte final aplicat: ${discount * 100}%`);
-
-        // 4. Consulta a la DB i resposta
-        db.get("SELECT * FROM shop_prices WHERE item_id = ? AND region = ?", [itemId, region], (err, row) => {
-            if (err) return res.status(500).json({ error: "DB error" });
-            if (!row) return res.json({ error: "Item not found" });
-
+        // 2+3+4. Detecció dinàmica de regió + motor + resposta
+        const applyAndRespond = (row, discount) => {
             let response = {};
             allowedOutputs.forEach(field => {
-                if      (field === "price")    response.price    = parseFloat((row.price * (1 - discount)).toFixed(2));
-                else if (field === "currency") response.currency = row.currency;
-                else    response[field] = row[field] !== undefined ? row[field] : 0;
+                if (field === 'price') response.price = parseFloat((row.price * (1 - discount)).toFixed(2));
+                else if (field === 'currency') response.currency = row.currency;
+                else response[field] = row[field] !== undefined ? row[field] : 0;
             });
-
             res.json(response);
-        });
+        };
+
+        const resolvePrice = (region, regions) => {
+            const rulesDiscount = applyRules(rules, receivedData);
+            const eventDiscount = applyEventDiscounts(eventDiscounts, region, new Date());
+            const discount = Math.max(rulesDiscount, eventDiscount);
+            if (discount > 0) console.log('💰 Descompte: ' + (discount * 100) + '%');
+            db.get('SELECT * FROM shop_prices WHERE item_id = ? AND region = ?', [itemId, region], (err, row) => {
+                if (err) return res.status(500).json({ error: 'DB error' });
+                if (row) return applyAndRespond(row, discount);
+                // Fallback: regió per defecte
+                const defRegion = (regions || []).find(r => r.is_default);
+                if (defRegion && defRegion.id !== region) {
+                    db.get('SELECT * FROM shop_prices WHERE item_id = ? AND region = ?', [itemId, defRegion.id], (err, defRow) => {
+                        if (!defRow) return res.json({ error: 'Item not found' });
+                        applyAndRespond(defRow, discount);
+                    });
+                } else {
+                    res.json({ error: 'Item not found' });
+                }
+            });
+        };
+
+        if (allowedInputs.includes('region') && receivedData.region) {
+            getRegionForReq(req, (_, regions) => resolvePrice(receivedData.region, regions));
+        } else {
+            getRegionForReq(req, resolvePrice);
+        }
     });
 });
 
@@ -224,14 +299,14 @@ app.get('/dashboard', (req, res) => {
     db.get("SELECT * FROM api_contract WHERE endpoint = 'get-price'", (err, contract) => {
         db.get("SELECT name FROM events WHERE id = 1", (err, currentEvent) => {
 
-            const inputs         = parseFields(contract && contract.inputs)  || [{ name: "itemId", active: true }];
-            const outputs        = parseFields(contract && contract.outputs) || [{ name: "price",  active: true }];
-            const rules          = parseRules(contract && contract.rules);
+            const inputs = parseFields(contract && contract.inputs) || [{ name: "itemId", active: true }];
+            const outputs = parseFields(contract && contract.outputs) || [{ name: "price", active: true }];
+            const rules = parseRules(contract && contract.rules);
             const eventDiscounts = parseEventDiscounts(contract && contract.event_discounts);
+            const seasonalItems = parseSeasonalItems(contract && contract.seasonal_items);
+            const decorations = parseDecorations(contract && contract.decorations);
             const activeEventName = currentEvent ? currentEvent.name.toUpperCase() : "UNKNOWN";
 
-            const geoSim    = geoip.lookup(debugSimulatedIp);
-            const regionSim = geoSim ? geoSim.country : "UNKNOWN";
 
             // ── Renderitza una fila de camp (inputs/outputs) ──
             function renderFieldRows(fields, prefix) {
@@ -267,8 +342,10 @@ app.get('/dashboard', (req, res) => {
                             <span class="group-wrap">(${condsHtml})</span>`;
                     }).join('');
 
+                    const prio = rule.priority ?? 0;
                     return `
                     <div class="rule-row">
+                        <span class="prio-badge" title="Prioritat">P${prio}</span>
                         <span class="rule-body">
                             ${groupsHtml}
                             <span class="arrow">→</span>
@@ -281,39 +358,49 @@ app.get('/dashboard', (req, res) => {
                 }).join('');
             }
 
+            function renderDateList(entries, delUrl, badge) {
+                if (entries.length === 0) return '<p class="empty">Cap entrada definida.</p>';
+                return entries.map((entry, i) => {
+                    const d = entry.type === 'day'
+                        ? String(entry.day).padStart(2, '0') + '/' + String(entry.month).padStart(2, '0')
+                        : String(entry.startDay).padStart(2, '0') + '/' + String(entry.startMonth).padStart(2, '0')
+                        + ' → ' + String(entry.endDay).padStart(2, '0') + '/' + String(entry.endMonth).padStart(2, '0');
+                    const co = entry.country || 'Tots';
+                    return '<div class="rule-row" style="background:rgba(96,165,250,0.07);border-color:rgba(96,165,250,0.2);">'
+                        + '<span class="rule-body">' + badge(entry)
+                        + '<span class="arrow">·</span><code>' + d + '</code>'
+                        + '<span class="arrow">·</span><span style="color:var(--text-2);font-size:12px;">' + co + '</span>'
+                        + '</span>'
+                        + '<a href="' + delUrl + '?index=' + i + '" onclick="return confirm(\'Eliminar?\')" class="del-btn">×</a>'
+                        + '</div>';
+                }).join('');
+            }
+            const renderEventDiscounts = eds => renderDateList(eds, '/delete-event-discount',
+                e => '<strong style="color:#e2e4e9;">' + e.name + '</strong><span class="prio-badge" style="color:#60a5fa;background:rgba(96,165,250,0.1);border-color:rgba(96,165,250,0.3);">' + Math.round(e.discount * 100) + '%</span>');
+            const renderSeasonalItems = items => renderDateList(items, '/delete-seasonal-item',
+                it => {
+                    const badges = it.prices
+                        ? Object.entries(it.prices).map(([rid, p]) =>
+                            '<span class="prio-badge" style="color:#a78bfa;background:rgba(167,139,250,0.1);border-color:rgba(167,139,250,0.3);">'
+                            + rid + ': ' + p.price + ' ' + p.currency + '</span>').join('')
+                        : '';
+                    return '<code style="color:#a78bfa;">' + it.itemId + '</code>'
+                        + '<span style="color:var(--text-2);font-size:12px;">' + it.name + '</span>'
+                        + badges;
+                });
+            const renderDecorations = decs => renderDateList(decs, '/delete-decoration',
+                dc => '<code style="color:#34d399;">' + dc.decorationId + '</code><span style="color:var(--text-2);font-size:12px;">' + dc.name + '</span>');
+
             const fieldOptions = inputs.map(f =>
                 `<option value="${f.name}">${f.name}${f.active ? '' : ' (inactiu)'}</option>`
             ).join('');
 
-            // Renderitza la llista de descomptes d'esdeveniments
-            function renderEventDiscounts(eds) {
-                if (eds.length === 0) return `<p class="empty">Cap descompte d'esdeveniment definit.</p>`;
-                return eds.map((ed, i) => {
-                    const dateStr = ed.type === 'day'
-                        ? `${String(ed.day).padStart(2,'0')}/${String(ed.month).padStart(2,'0')}`
-                        : `${String(ed.startDay).padStart(2,'0')}/${String(ed.startMonth).padStart(2,'0')} → ${String(ed.endDay).padStart(2,'0')}/${String(ed.endMonth).padStart(2,'0')}`;
-                    const countryStr = ed.country ? ed.country : 'Tots els països';
-                    return `
-                    <div class="rule-row" style="background:rgba(96,165,250,0.07); border-color:rgba(96,165,250,0.2);">
-                        <span class="prio-badge" style="color:#60a5fa; background:rgba(96,165,250,0.1); border-color:rgba(96,165,250,0.3);">${Math.round(ed.discount * 100)}%</span>
-                        <span class="rule-body">
-                            <strong style="color:#e2e4e9;">${ed.name}</strong>
-                            <span class="arrow">·</span>
-                            <code>${dateStr}</code>
-                            <span class="arrow">·</span>
-                            <span style="color:var(--text-2); font-size:12px;">${countryStr}</span>
-                        </span>
-                        <a href="/delete-event-discount?index=${i}"
-                           onclick="return confirm('Eliminar aquest descompte?')"
-                           class="del-btn" title="Eliminar">×</a>
-                    </div>`;
-                }).join('');
-            }
-
-            const inputRows        = renderFieldRows(inputs,  'in');
-            const outputRows       = renderFieldRows(outputs, 'out');
-            const ruleRows         = renderRules(rules);
-            const eventDiscountRows = renderEventDiscounts(eventDiscounts);
+            const inputRows = renderFieldRows(inputs, 'in');
+            const outputRows = renderFieldRows(outputs, 'out');
+            const ruleRows = renderRules(rules);
+            const eventDiscRows = renderEventDiscounts(eventDiscounts);
+            const seasonalItemRows = renderSeasonalItems(seasonalItems);
+            const decorationRows = renderDecorations(decorations);
 
             // clientScript: s'injecta directament al HTML.
             // El codi del client usa createElement per evitar template literals
@@ -414,7 +501,46 @@ addGroup();
                 + '<option value="!=">!=</option>';
             const clientScript = buildClientScript(safeFieldOptions, safeOpOptions);
 
-            res.send(`<!DOCTYPE html>
+            // Carreguem regions i preus base de forma encadenada per tenir-los disponibles al template
+            db.all('SELECT * FROM regions ORDER BY is_default ASC, name ASC', (err, regions) => {
+                regions = regions || [];
+                const geoSim = geoip.lookup(debugSimulatedIp);
+                const regionSim = detectRegion(geoSim, regions);
+                const regionOptions = '<option value="">Totes les regions</option>'
+                    + regions.map(r => `<option value="${r.id}">${r.name} (${r.id})</option>`).join('');
+
+                db.all('SELECT sp.item_id, sp.region, sp.price, sp.currency FROM shop_prices sp ORDER BY sp.item_id, sp.region', (err, basePrices) => {
+                    // 1. Agrupem els preus per item_id
+                    const groupedPrices = {};
+                    basePrices.forEach(p => {
+                        if (!groupedPrices[p.item_id]) groupedPrices[p.item_id] = [];
+                        groupedPrices[p.item_id].push(p);
+                    });
+
+                    // 2. Generem les files agrupades
+                    const basePriceRows = Object.keys(groupedPrices).length === 0
+                        ? '<p class="empty">Cap preu base definit. Afegeix preus per als items fixos (sword, shield...).</p>'
+                        : Object.keys(groupedPrices).map(itemId => {
+                            const regionBadges = groupedPrices[itemId].map(p =>
+                                `<span class="prio-badge" style="color:#34d399;background:rgba(52,211,153,0.1);border-color:rgba(52,211,153,0.3); margin-right: 4px;">
+                            ${p.region}: ${p.price} ${p.currency} 
+                            <a href="/delete-base-price?itemId=${encodeURIComponent(p.item_id)}&region=${p.region}" 
+                               onclick="return confirm('Eliminar aquest preu?')" 
+                               style="color:var(--text-3); text-decoration:none; margin-left:4px; font-size:14px;">×</a>
+                        </span>`
+                            ).join('');
+
+                            return `
+                    <div class="rule-row" style="background:rgba(52,211,153,0.05);border-color:rgba(52,211,153,0.15);margin-bottom:5px;">
+                        <span class="rule-body">
+                            <code style="font-size: 14px; font-weight: bold;">${itemId}</code>
+                            <span class="arrow" style="margin: 0 8px;">→</span>
+                            ${regionBadges}
+                        </span>
+                    </div>`;
+                        }).join('');
+
+                    res.send(`<!DOCTYPE html>
 <html lang="ca">
 <head>
     <meta charset="UTF-8">
@@ -693,6 +819,12 @@ addGroup();
             border-radius: 3px;
         }
         .or-op { background: rgba(248,113,113,0.1); margin: 0 4px; }
+        .prio-badge {
+            font-family: var(--mono); font-size: 10px; font-weight: 700;
+            color: var(--amber); background: var(--amber-bg);
+            border: 1px solid var(--amber-bdr);
+            border-radius: 4px; padding: 2px 6px; flex-shrink: 0;
+        }
 
         /* ── INPUTS / SELECTS ── */
         input[type="text"], input[type="number"], select {
@@ -775,6 +907,53 @@ addGroup();
         .footer a:hover { color: var(--text); }
 
         hr.sep { border: none; border-top: 1px solid var(--border); margin: 8px 0 16px; }
+
+        /* ── TABS ── */
+        .tab-nav {
+            display: flex;
+            margin-bottom: 24px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+            background: var(--surface);
+        }
+        .tab-btn {
+            flex: 1;
+            padding: 13px 6px 11px;
+            font-family: var(--sans);
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            color: var(--text-3);
+            background: transparent;
+            border: none;
+            border-right: 1px solid var(--border);
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 5px;
+            transition: color 0.15s, background 0.15s;
+            position: relative;
+        }
+        .tab-btn:last-child { border-right: none; }
+        .tab-btn:hover { color: var(--text-2); background: rgba(255,255,255,0.02); }
+        .tab-btn.active { color: var(--text); background: rgba(255,255,255,0.03); }
+        .tab-btn .tab-icon { font-size: 17px; opacity: 0.5; }
+        .tab-btn.active .tab-icon { opacity: 1; }
+        .tab-btn::after {
+            content: '';
+            position: absolute;
+            bottom: 0; left: 20%; right: 20%;
+            height: 2px;
+            background: #60a5fa;
+            border-radius: 1px 1px 0 0;
+            opacity: 0;
+            transition: opacity 0.15s;
+        }
+        .tab-btn.active::after { opacity: 1; }
+        .tab-panel { display: none; }
     </style>
 </head>
 <body>
@@ -784,7 +963,6 @@ addGroup();
     <div class="header">
         <div class="header-left">
             <h1>LiveOps Dashboard</h1>
-            <p>Gestió de preus, regles i esdeveniments en temps real</p>
         </div>
         <div class="status-badge">
             <span class="status-dot"></span>
@@ -808,6 +986,74 @@ addGroup();
         </div>
     </div>
 
+
+
+    <nav class="tab-nav">
+        <button class="tab-btn" data-tab="config">
+            <span class="tab-icon">⚙</span>
+            Configuració
+        </button>
+        <button class="tab-btn" data-tab="preus">
+            <span class="tab-icon">◈</span>
+            Preus &amp; Regles
+        </button>
+        <button class="tab-btn" data-tab="contingut">
+            <span class="tab-icon">◉</span>
+            Contingut
+        </button>
+        <button class="tab-btn" data-tab="events">
+            <span class="tab-icon">⊕</span>
+            Esdeveniments
+        </button>
+    </nav>
+
+    <div class="tab-panel" id="tab-config">
+    <!-- ══ REGIONS ══ -->
+    <div class="section">
+        <div class="section-head">
+            <span class="section-title">Regions</span>
+            <span class="section-hint">Defineix regions amb països · Basen tots els filtres de preus</span>
+        </div>
+        <div class="section-body">
+            ${regions.length === 0 ? '<p class="empty">Cap regió definida.</p>' : regions.map((r, i) => `
+                <div class="rule-row" style="margin-bottom:6px;">
+                    <span class="prio-badge">${r.id}</span>
+                    <span class="rule-body">
+                        <strong style="color:#e2e4e9;">${r.name}</strong>
+                        <span class="arrow">·</span>
+                        <code style="color:var(--text-2);font-size:11px;">${JSON.parse(r.countries || '[]').join(', ') || '*'}</code>
+                        <span class="prio-badge" style="color:#34d399;background:rgba(52,211,153,0.1);border-color:rgba(52,211,153,0.3);">${r.currency}</span>
+                        ${r.is_default ? '<span class="prio-badge" style="color:#f87171;background:rgba(248,113,113,0.1);border-color:rgba(248,113,113,0.3);">DEFAULT</span>' : ''}
+                    </span>
+                    <a href="/delete-region?id=${r.id}" onclick="return confirm('Eliminar ${r.name}?')" class="del-btn">×</a>
+                </div>`).join('')}
+            <form action="/add-region" method="POST">
+                <div class="add-row" style="margin-top:10px;flex-wrap:wrap;gap:8px;align-items:center;">
+                    <span class="add-label">ID</span>
+                    <input type="text" name="id" placeholder="EU" style="width:55px;" required>
+                    <span class="add-label">Nom</span>
+                    <input type="text" name="name" placeholder="Europa" style="width:90px;" required>
+                    <span class="add-label">Països</span>
+                    <input type="text" name="countries" placeholder="ES,FR o ES:CT" style="width:120px;"
+                           title="Codis separats per comes. CC=país, CC:RR=subregió, *=tots">
+                    <span class="add-label">Moneda</span>
+                    <select name="currency">
+                        <option value="EUR">EUR</option>
+                        <option value="USD">USD</option>
+                        <option value="JPY">JPY</option>
+                        <option value="GBP">GBP</option>
+                    </select>
+                    <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-2);">
+                        <input type="checkbox" name="is_default" value="1"> Per defecte
+                    </label>
+                    <button type="submit" class="btn-add" style="margin-left:auto;">Afegir regió</button>
+                </div>
+                <p style="font-size:11px;color:var(--text-3);margin-top:8px;">
+                    <b>ES</b>=Espanya · <b>ES:CT</b>=Catalunya · <b>FR,DE</b>=múltiples · La regió <b>per defecte</b> rep la resta.
+                </p>
+            </form>
+        </div>
+    </div>
     <!-- ══ CONTRACTE ══ -->
     <div class="section">
         <div class="section-head">
@@ -837,7 +1083,8 @@ addGroup();
             </form>
         </div>
     </div>
-
+    </div>
+    <div class="tab-panel" id="tab-preus">
     <!-- ══ REGLES ══ -->
     <div class="section">
         <div class="section-head">
@@ -855,7 +1102,9 @@ addGroup();
                                    color:var(--text-2); font-size:12px; border-radius:5px; cursor:pointer;">
                         ∨ Afegir grup OR
                     </button>
-                    <div style="display:flex; align-items:center; gap:8px; margin-left:auto;">
+                    <div style="display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:wrap;">
+                        <span class="add-label" style="color:var(--amber);">Prioritat</span>
+                        <input type="number" name="priority" min="0" max="999" placeholder="0" style="width:60px;">
                         <span class="add-label" style="color:#f87171;">→</span>
                         <input type="number" name="discount" min="1" max="100" placeholder="%">
                         <span class="add-label">%</span>
@@ -871,71 +1120,176 @@ addGroup();
             ${clientScript}
         </div>
     </div>
-
-    <!-- ══ DESCOMPTES PER ESDEVENIMENTS ══ -->
     <div class="section">
         <div class="section-head">
-            <span class="section-title">Descomptes per Esdeveniments i País</span>
-            <span class="section-hint">Per data o rang de dates · País opcional</span>
+            <span class="section-title">Descomptes per Temporada i País</span>
+            <span class="section-hint">Rang de dates o dia exacte · País opcional</span>
         </div>
         <div class="section-body">
-            ${eventDiscountRows}
+            ${eventDiscRows}
             <form action="/add-event-discount" method="POST">
-                <div class="add-row" style="margin-top:10px; flex-wrap:wrap; gap:8px; align-items:center;">
+                <div class="add-row" style="margin-top:10px;flex-wrap:wrap;gap:8px;align-items:center;">
                     <span class="add-label">Nom</span>
-                    <input type="text" name="name" placeholder="ex: Nadal" style="width:100px;">
-                    <span class="add-label">Tipus</span>
-                    <select name="type" onchange="toggleEventType(this.value)"
-                            style="min-width:120px;">
+                    <input type="text" name="name" placeholder="ex: Nadal" style="width:90px;">
+                    <span class="add-label" style="color:#f87171;">→</span>
+                    <input type="number" name="discount" min="1" max="100" placeholder="%" style="width:60px;">
+                    <span class="add-label">%</span>
+                    <select name="type" onchange="toggleType(this,'rngadd-event-discount','dayadd-event-discount')" style="min-width:120px;">
+                        <option value="range">Rang de dates</option>
+                        <option value="day">Dia exacte</option>
+                    </select>
+                    <select name="country">${regionOptions}</select>
+                </div>
+                <div id="rngadd-event-discount" class="add-row" style="margin-top:6px;flex-wrap:wrap;gap:8px;">
+                    <span class="add-label">Inici</span>
+                    <input type="number" name="startDay"   min="1" max="31" placeholder="DD" style="width:52px;">
+                    <span class="add-label">/</span>
+                    <input type="number" name="startMonth" min="1" max="12" placeholder="MM" style="width:52px;">
+                    <span class="add-label" style="margin-left:8px;">Fi</span>
+                    <input type="number" name="endDay"     min="1" max="31" placeholder="DD" style="width:52px;">
+                    <span class="add-label">/</span>
+                    <input type="number" name="endMonth"   min="1" max="12" placeholder="MM" style="width:52px;">
+                </div>
+                <div id="dayadd-event-discount" class="add-row" style="display:none;margin-top:6px;gap:8px;">
+                    <span class="add-label">Dia</span>
+                    <input type="number" name="day"   min="1" max="31" placeholder="DD" style="width:52px;">
+                    <span class="add-label">/</span>
+                    <input type="number" name="month" min="1" max="12" placeholder="MM" style="width:52px;">
+                </div>
+                <div class="add-row" style="margin-top:6px;gap:8px;align-items:center;">
+                    <button type="submit" class="btn-add" style="margin-left:auto;">Afegir descompte</button>
+                </div>
+                <p style="font-size:11px;color:var(--text-3);margin-top:8px;">Ex: Nadal · rang 25/12→07/01 · Tots · 20% &nbsp;·&nbsp; Sant Jordi · dia 23/04 · CAT · 15%</p>
+            </form>
+        </div>
+    </div>
+    </div>
+    <div class="tab-panel" id="tab-contingut">
+    <div class="section">
+        <div class="section-head">
+            <span class="section-title">Items de Temporada</span>
+            <span class="section-hint">Items que només apareixen en èpoques concretes</span>
+        </div>
+        <div class="section-body">
+            ${seasonalItemRows}
+            <form action="/add-seasonal-item" method="POST">
+                <div class="add-row" style="margin-top:10px;flex-wrap:wrap;gap:8px;align-items:center;">
+                    <span class="add-label">ID</span>
+                    <input type="text" name="itemId" placeholder="ex: rosa" style="width:85px;" required>
+                    <span class="add-label">Nom</span>
+                    <input type="text" name="name" placeholder="ex: Rosa" style="width:85px;">
+                    <select name="type" onchange="toggleType(this,'rngadd-seasonal-item','dayadd-seasonal-item')" style="min-width:120px;">
                         <option value="range">Rang de dates</option>
                         <option value="day">Dia exacte</option>
                     </select>
                 </div>
-                <!-- Rang de dates -->
-                <div id="ev-range" class="add-row" style="margin-top:6px; flex-wrap:wrap; gap:8px; align-items:center;">
-                    <span class="add-label">Inici</span>
-                    <input type="number" name="startDay"   min="1" max="31" placeholder="DD" style="width:55px;">
-                    <span class="add-label">/</span>
-                    <input type="number" name="startMonth" min="1" max="12" placeholder="MM" style="width:55px;">
-                    <span class="add-label" style="margin-left:8px;">Fi</span>
-                    <input type="number" name="endDay"     min="1" max="31" placeholder="DD" style="width:55px;">
-                    <span class="add-label">/</span>
-                    <input type="number" name="endMonth"   min="1" max="12" placeholder="MM" style="width:55px;">
-                </div>
-                <!-- Dia exacte (ocult per defecte) -->
-                <div id="ev-day" class="add-row" style="display:none; margin-top:6px; flex-wrap:wrap; gap:8px; align-items:center;">
-                    <span class="add-label">Dia</span>
-                    <input type="number" name="day"   min="1" max="31" placeholder="DD" style="width:55px;">
-                    <span class="add-label">/</span>
-                    <input type="number" name="month" min="1" max="12" placeholder="MM" style="width:55px;">
-                </div>
-                <div class="add-row" style="margin-top:6px; flex-wrap:wrap; gap:8px; align-items:center;">
-                    <span class="add-label">País</span>
-                    <select name="country">
-                        <option value="">Tots els països</option>
-                        <option value="CAT">Catalunya (CAT)</option>
-                        <option value="US">Estats Units (US)</option>
-                        <option value="JP">Japó (JP)</option>
+                <!-- Preu per regió: omple'l = item visible en aquella regió; buit = no apareix -->
+                ${regions.map(r => `
+                <div class="add-row" style="margin-top:4px;flex-wrap:wrap;gap:8px;align-items:center;">
+                    <span class="prio-badge" style="color:#a78bfa;background:rgba(167,139,250,0.1);border-color:rgba(167,139,250,0.3);">${r.id}</span>
+                    <span class="add-label" style="color:var(--text-2);">Preu (buit=no disponible)</span>
+                    <input type="number" step="0.01" name="price_${r.id}" placeholder="9.99" style="width:75px;">
+                    <select name="currency_${r.id}">
+                        <option value="EUR" ${r.currency === 'EUR' ? 'selected' : ''}>EUR</option>
+                        <option value="USD" ${r.currency === 'USD' ? 'selected' : ''}>USD</option>
+                        <option value="JPY" ${r.currency === 'JPY' ? 'selected' : ''}>JPY</option>
+                        <option value="GBP" ${r.currency === 'GBP' ? 'selected' : ''}>GBP</option>
                     </select>
-                    <span class="add-label" style="margin-left:8px; color:#f87171;">→ Descompte</span>
-                    <input type="number" name="discount" min="1" max="100" placeholder="%" style="width:65px;">
-                    <span class="add-label">%</span>
-                    <button type="submit" class="btn-add" style="margin-left:auto;">Afegir descompte</button>
+                </div>`).join('')}
+                <div id="rngadd-seasonal-item" class="add-row" style="margin-top:6px;flex-wrap:wrap;gap:8px;">
+                    <span class="add-label">Inici</span>
+                    <input type="number" name="startDay"   min="1" max="31" placeholder="DD" style="width:52px;">
+                    <span class="add-label">/</span>
+                    <input type="number" name="startMonth" min="1" max="12" placeholder="MM" style="width:52px;">
+                    <span class="add-label" style="margin-left:8px;">Fi</span>
+                    <input type="number" name="endDay"     min="1" max="31" placeholder="DD" style="width:52px;">
+                    <span class="add-label">/</span>
+                    <input type="number" name="endMonth"   min="1" max="12" placeholder="MM" style="width:52px;">
                 </div>
-                <p style="font-size:11px; color:var(--text-3); margin-top:8px;">
-                    Ex: Nadal · rang 25/12 → 07/01 · Tots els països · 20%
-                    &nbsp;·&nbsp; Sant Jordi · dia exacte 23/04 · CAT · 15%
-                </p>
+                <div id="dayadd-seasonal-item" class="add-row" style="display:none;margin-top:6px;gap:8px;">
+                    <span class="add-label">Dia</span>
+                    <input type="number" name="day"   min="1" max="31" placeholder="DD" style="width:52px;">
+                    <span class="add-label">/</span>
+                    <input type="number" name="month" min="1" max="12" placeholder="MM" style="width:52px;">
+                </div>
+                <div class="add-row" style="margin-top:6px;gap:8px;align-items:center;">
+                    <button type="submit" class="btn-add" style="margin-left:auto;">Afegir item</button>
+                </div>
+                <p style="font-size:11px;color:var(--text-3);margin-top:8px;">Ex: ID <b>rosa</b> · dia 11/09 · CAT &nbsp;·&nbsp; ID <b>espasa_daurada</b> · rang 24/12→06/01 · Tots</p>
             </form>
-            <script>
-            function toggleEventType(val) {
-                document.getElementById('ev-range').style.display = val === 'range' ? 'flex' : 'none';
-                document.getElementById('ev-day').style.display   = val === 'day'   ? 'flex' : 'none';
-            }
-            </script>
         </div>
     </div>
-
+    <div class="section">
+        <div class="section-head">
+            <span class="section-title">Objectes d'Escena de Temporada</span>
+            <span class="section-hint">Objectes que només apareixen en èpoques concretes</span>
+        </div>
+        <div class="section-body">
+            ${decorationRows}
+            <form action="/add-decoration" method="POST">
+                <div class="add-row" style="margin-top:10px;flex-wrap:wrap;gap:8px;align-items:center;">
+                    <span class="add-label">ID</span>
+                    <input type="text" name="decorationId" placeholder="ex: estelada" style="width:95px;">
+                    <span class="add-label">Nom</span>
+                    <input type="text" name="name" placeholder="ex: Estelada" style="width:85px;">
+                    <select name="type" onchange="toggleType(this,'rngadd-decoration','dayadd-decoration')" style="min-width:120px;">
+                        <option value="range">Rang de dates</option>
+                        <option value="day">Dia exacte</option>
+                    </select>
+                    <select name="country">${regionOptions}</select>
+                </div>
+                <div id="rngadd-decoration" class="add-row" style="margin-top:6px;flex-wrap:wrap;gap:8px;">
+                    <span class="add-label">Inici</span>
+                    <input type="number" name="startDay"   min="1" max="31" placeholder="DD" style="width:52px;">
+                    <span class="add-label">/</span>
+                    <input type="number" name="startMonth" min="1" max="12" placeholder="MM" style="width:52px;">
+                    <span class="add-label" style="margin-left:8px;">Fi</span>
+                    <input type="number" name="endDay"     min="1" max="31" placeholder="DD" style="width:52px;">
+                    <span class="add-label">/</span>
+                    <input type="number" name="endMonth"   min="1" max="12" placeholder="MM" style="width:52px;">
+                </div>
+                <div id="dayadd-decoration" class="add-row" style="display:none;margin-top:6px;gap:8px;">
+                    <span class="add-label">Dia</span>
+                    <input type="number" name="day"   min="1" max="31" placeholder="DD" style="width:52px;">
+                    <span class="add-label">/</span>
+                    <input type="number" name="month" min="1" max="12" placeholder="MM" style="width:52px;">
+                </div>
+                <div class="add-row" style="margin-top:6px;gap:8px;align-items:center;">
+                    <button type="submit" class="btn-add" style="margin-left:auto;">Afegir decoració</button>
+                </div>
+                <p style="font-size:11px;color:var(--text-3);margin-top:8px;">Ex: ID <b>estelada</b> · dia 11/09 · CAT &nbsp;·&nbsp; ID <b>neu</b> · rang 25/12→07/01 · Tots</p>
+            </form>
+        </div>
+    </div>
+    <!-- ══ PREUS BASE ══ -->
+    <div class="section">
+        <div class="section-head">
+            <span class="section-title">Preus de la Botiga</span>
+            <span class="section-hint">Preus per als items per regió</span>
+        </div>
+        <div class="section-body">
+            ${basePriceRows}
+            <form action="/add-base-price" method="POST">
+                <div class="add-row" style="margin-top:10px;flex-wrap:wrap;gap:8px;align-items:center;">
+                    <span class="add-label">Item ID</span>
+                    <input type="text" name="itemId" placeholder="sword" style="width:80px;" required>
+                    <span class="add-label">Regió</span>
+                    <select name="region">${regionOptions}</select>
+                    <span class="add-label">Preu</span>
+                    <input type="number" step="0.01" name="price" placeholder="9.99" style="width:75px;" required>
+                    <select name="currency">
+                        <option value="EUR">EUR</option>
+                        <option value="USD">USD</option>
+                        <option value="JPY">JPY</option>
+                        <option value="GBP">GBP</option>
+                    </select>
+                    <button type="submit" class="btn-add" style="margin-left:auto;">Desar preu</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    </div>
+    <div class="tab-panel" id="tab-events">
     <!-- ══ ESDEVENIMENTS ══ -->
     <div class="section">
         <div class="section-head">
@@ -958,7 +1312,6 @@ addGroup();
             </form>
         </div>
     </div>
-
     <!-- ══ SIMULADOR IP ══ -->
     <div class="section">
         <div class="section-head">
@@ -974,6 +1327,40 @@ addGroup();
             </form>
         </div>
     </div>
+    </div>
+
+    <script>
+    function toggleType(selectElement, rangeId, dayId) {
+        var rangeDiv = document.getElementById(rangeId);
+        var dayDiv = document.getElementById(dayId);
+        
+        if (selectElement.value === 'day') {
+            rangeDiv.style.display = 'none';
+            dayDiv.style.display = 'flex';
+        } else {
+            rangeDiv.style.display = 'flex';
+            dayDiv.style.display = 'none';
+        }
+    }
+
+    (function() {
+        function showTab(id) {
+            document.querySelectorAll('.tab-panel').forEach(function(p) {
+                p.style.display = p.id === 'tab-' + id ? 'block' : 'none';
+            });
+            document.querySelectorAll('.tab-btn').forEach(function(b) {
+                b.classList.toggle('active', b.dataset.tab === id);
+            });
+            try { localStorage.setItem('liveops-tab', id); } catch(e) {}
+        }
+        document.querySelectorAll('.tab-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() { showTab(this.dataset.tab); });
+        });
+        var saved = '';
+        try { saved = localStorage.getItem('liveops-tab') || ''; } catch(e) {}
+        showTab(['config','preus','contingut','events'].indexOf(saved) >= 0 ? saved : 'config');
+    })();
+    </script>
 
     <div class="footer">
         <a href="/dashboard">↺ Refrescar</a>
@@ -982,6 +1369,8 @@ addGroup();
 </div>
 </body>
 </html>`);
+                });
+            });
         });
     });
 });
@@ -994,15 +1383,15 @@ addGroup();
 // POST /update-contract
 app.post('/update-contract', (req, res) => {
     db.get("SELECT * FROM api_contract WHERE endpoint = 'get-price'", (err, contract) => {
-        let allInputs  = parseFields(contract && contract.inputs);
+        let allInputs = parseFields(contract && contract.inputs);
         let allOutputs = parseFields(contract && contract.outputs);
 
-        allInputs  = allInputs.map(f  => ({ ...f, active: req.body[`active_in_${f.name}`]  === "on" }));
+        allInputs = allInputs.map(f => ({ ...f, active: req.body[`active_in_${f.name}`] === "on" }));
         allOutputs = allOutputs.map(f => ({ ...f, active: req.body[`active_out_${f.name}`] === "on" }));
 
-        const newInput  = (req.body.new_input_name  || "").trim();
+        const newInput = (req.body.new_input_name || "").trim();
         const newOutput = (req.body.new_output_name || "").trim();
-        if (newInput  && !allInputs.find(f  => f.name === newInput))  allInputs.push({ name: newInput,  active: true });
+        if (newInput && !allInputs.find(f => f.name === newInput)) allInputs.push({ name: newInput, active: true });
         if (newOutput && !allOutputs.find(f => f.name === newOutput)) allOutputs.push({ name: newOutput, active: true });
 
         db.run(
@@ -1021,9 +1410,9 @@ app.post('/update-contract', (req, res) => {
 app.get('/delete-field', (req, res) => {
     const { fieldName, fieldType } = req.query;
     db.get("SELECT * FROM api_contract WHERE endpoint = 'get-price'", (err, contract) => {
-        let allInputs  = parseFields(contract && contract.inputs);
+        let allInputs = parseFields(contract && contract.inputs);
         let allOutputs = parseFields(contract && contract.outputs);
-        if (fieldType === "in")  allInputs  = allInputs.filter(f  => f.name !== fieldName);
+        if (fieldType === "in") allInputs = allInputs.filter(f => f.name !== fieldName);
         if (fieldType === "out") allOutputs = allOutputs.filter(f => f.name !== fieldName);
         db.run(
             "UPDATE api_contract SET inputs = ?, outputs = ? WHERE endpoint = 'get-price'",
@@ -1048,8 +1437,8 @@ app.post('/add-rule', (req, res) => {
         let ci = 0;
         while (req.body[`g${gi}_field${ci}`]) {
             const field = req.body[`g${gi}_field${ci}`].trim();
-            const op    = req.body[`g${gi}_op${ci}`];
-            const val   = (req.body[`g${gi}_val${ci}`] || "").trim();
+            const op = req.body[`g${gi}_op${ci}`];
+            const val = (req.body[`g${gi}_val${ci}`] || "").trim();
             if (field && op && val) conditions.push({ field, operator: op, value: val });
             ci++;
         }
@@ -1062,7 +1451,8 @@ app.post('/add-rule', (req, res) => {
 
     db.get("SELECT rules FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
         const rules = parseRules(row && row.rules);
-        rules.push({ groups, discount: parseFloat(discount) / 100 });
+        const priority = parseInt(req.body.priority) || 0;
+        rules.push({ groups, priority, discount: parseFloat(discount) / 100 });
         db.run(
             "UPDATE api_contract SET rules = ? WHERE endpoint = 'get-price'",
             [JSON.stringify(rules)],
@@ -1099,7 +1489,7 @@ app.get('/delete-rule', (req, res) => {
 app.post('/update-event', (req, res) => {
     const eventName = req.body.eventName;
     let message = "Benvingut", color = "#FFFFFF";
-    if (eventName === "christmas")  { message = "Bon Nadal!";   color = "#FF0000"; }
+    if (eventName === "christmas") { message = "Bon Nadal!"; color = "#FF0000"; }
     if (eventName === "sant_jordi") { message = "Feliç Diada!"; color = "#FFD700"; }
     db.run(
         "UPDATE events SET name = ?, message = ?, color = ? WHERE id = 1",
@@ -1117,32 +1507,20 @@ app.post('/debug/set-ip', (req, res) => {
 
 // POST /add-event-discount
 app.post('/add-event-discount', (req, res) => {
-    const { name, type, startDay, startMonth, endDay, endMonth, day, month, country, discount } = req.body;
-    if (!name || !discount) return res.redirect('/dashboard');
-
-    const entry = { name: name.trim(), type, country: country || '', discount: parseFloat(discount) / 100 };
-
-    if (type === 'day') {
-        entry.day   = parseInt(day);
-        entry.month = parseInt(month);
+    const b = req.body;
+    const entry = Object.assign({}, { name: b.name.trim(), discount: parseFloat(b.discount) / 100 }, { type: b.type, country: b.country || '' });
+    if (b.type === 'day') {
+        entry.day = parseInt(b.day); entry.month = parseInt(b.month);
     } else {
-        entry.startDay   = parseInt(startDay);
-        entry.startMonth = parseInt(startMonth);
-        entry.endDay     = parseInt(endDay);
-        entry.endMonth   = parseInt(endMonth);
+        entry.startDay = parseInt(b.startDay); entry.startMonth = parseInt(b.startMonth);
+        entry.endDay = parseInt(b.endDay); entry.endMonth = parseInt(b.endMonth);
     }
-
     db.get("SELECT event_discounts FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
-        const eds = parseEventDiscounts(row && row.event_discounts);
-        eds.push(entry);
-        db.run(
-            "UPDATE api_contract SET event_discounts = ? WHERE endpoint = 'get-price'",
-            [JSON.stringify(eds)],
-            (err) => {
-                if (err) console.error(err);
-                console.log(`🎉 Nou descompte: ${name} → ${discount}% (${country || 'tots'})`);
-                res.redirect('/dashboard');
-            }
+        const list = parseEventDiscounts(row && row.event_discounts);
+        list.push(entry);
+        db.run("UPDATE api_contract SET event_discounts = ? WHERE endpoint = 'get-price'",
+            [JSON.stringify(list)],
+            (err) => { if (err) console.error(err); res.redirect('/dashboard'); }
         );
     });
 });
@@ -1151,17 +1529,122 @@ app.post('/add-event-discount', (req, res) => {
 app.get('/delete-event-discount', (req, res) => {
     const index = parseInt(req.query.index);
     db.get("SELECT event_discounts FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
-        let eds = parseEventDiscounts(row && row.event_discounts);
-        if (!isNaN(index) && index >= 0 && index < eds.length) {
-            const deleted = eds.splice(index, 1);
-            console.log(`🗑️ Descompte eliminat: ${JSON.stringify(deleted[0])}`);
-        }
-        db.run(
-            "UPDATE api_contract SET event_discounts = ? WHERE endpoint = 'get-price'",
-            [JSON.stringify(eds)],
-            () => res.redirect('/dashboard')
+        let list = parseEventDiscounts(row && row.event_discounts);
+        if (!isNaN(index) && index >= 0 && index < list.length) list.splice(index, 1);
+        db.run("UPDATE api_contract SET event_discounts = ? WHERE endpoint = 'get-price'",
+            [JSON.stringify(list)], () => res.redirect('/dashboard'));
+    });
+});
+
+// POST /add-seasonal-item
+app.post('/add-seasonal-item', (req, res) => {
+    const b = req.body;
+    if (!b.itemId) return res.redirect('/dashboard');
+    const entry = { itemId: b.itemId.trim(), name: (b.name || '').trim(), type: b.type };
+    if (b.type === 'day') {
+        entry.day = parseInt(b.day); entry.month = parseInt(b.month);
+    } else {
+        entry.startDay = parseInt(b.startDay); entry.startMonth = parseInt(b.startMonth);
+        entry.endDay = parseInt(b.endDay); entry.endMonth = parseInt(b.endMonth);
+    }
+    db.all('SELECT * FROM regions', (err, regions) => {
+        regions = regions || [];
+        const activeRegions = [];
+        const prices = {};
+        regions.forEach(r => {
+            const priceVal = parseFloat(b['price_' + r.id]);
+            const currVal = b['currency_' + r.id] || r.currency || 'EUR';
+            if (!isNaN(priceVal) && priceVal > 0) {
+                activeRegions.push(r.id);
+                prices[r.id] = { price: priceVal, currency: currVal };
+                db.run('INSERT OR REPLACE INTO shop_prices (item_id, region, price, currency) VALUES (?, ?, ?, ?)',
+                    [entry.itemId, r.id, priceVal, currVal],
+                    (err) => { if (err) console.error(err); });
+            }
+        });
+        if (activeRegions.length > 0) { entry.activeRegions = activeRegions; entry.prices = prices; }
+        db.get("SELECT seasonal_items FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
+            const list = parseSeasonalItems(row && row.seasonal_items);
+            list.push(entry);
+            db.run("UPDATE api_contract SET seasonal_items = ? WHERE endpoint = 'get-price'",
+                [JSON.stringify(list)], (err) => { if (err) console.error(err); res.redirect('/dashboard'); });
+        });
+    });
+});
+
+// GET /delete-seasonal-item
+app.get('/delete-seasonal-item', (req, res) => {
+    const index = parseInt(req.query.index);
+    db.get("SELECT seasonal_items FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
+        let list = parseSeasonalItems(row && row.seasonal_items);
+        if (!isNaN(index) && index >= 0 && index < list.length) list.splice(index, 1);
+        db.run("UPDATE api_contract SET seasonal_items = ? WHERE endpoint = 'get-price'",
+            [JSON.stringify(list)], () => res.redirect('/dashboard'));
+    });
+});
+
+// POST /add-decoration
+app.post('/add-decoration', (req, res) => {
+    const b = req.body;
+    const entry = Object.assign({}, { decorationId: b.decorationId.trim(), name: b.name.trim() }, { type: b.type, country: b.country || '' });
+    if (b.type === 'day') {
+        entry.day = parseInt(b.day); entry.month = parseInt(b.month);
+    } else {
+        entry.startDay = parseInt(b.startDay); entry.startMonth = parseInt(b.startMonth);
+        entry.endDay = parseInt(b.endDay); entry.endMonth = parseInt(b.endMonth);
+    }
+    db.get("SELECT decorations FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
+        const list = parseDecorations(row && row.decorations);
+        list.push(entry);
+        db.run("UPDATE api_contract SET decorations = ? WHERE endpoint = 'get-price'",
+            [JSON.stringify(list)],
+            (err) => { if (err) console.error(err); res.redirect('/dashboard'); }
         );
     });
+});
+
+// GET /delete-decoration
+app.get('/delete-decoration', (req, res) => {
+    const index = parseInt(req.query.index);
+    db.get("SELECT decorations FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
+        let list = parseDecorations(row && row.decorations);
+        if (!isNaN(index) && index >= 0 && index < list.length) list.splice(index, 1);
+        db.run("UPDATE api_contract SET decorations = ? WHERE endpoint = 'get-price'",
+            [JSON.stringify(list)], () => res.redirect('/dashboard'));
+    });
+});
+
+// POST /add-region
+app.post('/add-region', (req, res) => {
+    const { id, name, countries, currency, is_default } = req.body;
+    if (!id || !name) return res.redirect('/dashboard');
+    const codes = (countries || '').split(',').map(s => s.trim()).filter(Boolean);
+    db.run('INSERT OR REPLACE INTO regions (id, name, countries, currency, is_default) VALUES (?,?,?,?,?)',
+        [id.trim().toUpperCase(), name.trim(), JSON.stringify(codes), currency || 'EUR', is_default ? 1 : 0],
+        (err) => { if (err) console.error(err); res.redirect('/dashboard'); });
+});
+
+// GET /delete-region
+app.get('/delete-region', (req, res) => {
+    const { id } = req.query;
+    if (!id) return res.redirect('/dashboard');
+    db.run('DELETE FROM regions WHERE id = ?', [id], () => res.redirect('/dashboard'));
+});
+
+// POST /add-base-price
+app.post('/add-base-price', (req, res) => {
+    const { itemId, region, price, currency } = req.body;
+    if (!itemId || !region || !price) return res.redirect('/dashboard');
+    db.run('INSERT OR REPLACE INTO shop_prices (item_id, region, price, currency) VALUES (?,?,?,?)',
+        [itemId.trim(), region, parseFloat(price), currency || 'EUR'],
+        (err) => { if (err) console.error(err); res.redirect('/dashboard'); });
+});
+
+// GET /delete-base-price
+app.get('/delete-base-price', (req, res) => {
+    const { itemId, region } = req.query;
+    db.run('DELETE FROM shop_prices WHERE item_id = ? AND region = ?', [itemId, region],
+        () => res.redirect('/dashboard'));
 });
 
 // ------------------------------------

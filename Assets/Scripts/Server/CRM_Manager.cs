@@ -12,11 +12,17 @@ namespace Server
         private readonly string _eventUrl = "http://localhost:3000/api/get-event";
         private readonly string _priceUrl = "http://localhost:3000/api/get-price";
         private readonly string _contractUrl = "http://localhost:3000/api/get-contract";
+        private readonly string _shopUrl = "http://localhost:3000/api/get-shop";
+        private readonly string _decorationsUrl = "http://localhost:3000/api/get-decorations";
 
         private string _lastEventName = "";
 
         public static event Action<string, float, string> OnPriceUpdated;
         public static event Action<string> OnEventUpdated;
+        public static event Action<string[]> OnShopItemsUpdated;
+        public static event Action<string[]> OnDecorationsUpdated;
+        
+        private string[] _currentActiveItems = new string[0];
 
         void Start()
         {
@@ -52,7 +58,7 @@ namespace Server
                 }
 
                 // Obtenim els camps fixos de PlayerData per comparar
-                FieldInfo[] fixedFields = typeof(PlayerData.PlayerData)
+                FieldInfo[] fixedFields = typeof(Data.PlayerData)
                     .GetFields(BindingFlags.Public | BindingFlags.Instance);
 
                 int newFieldsCount = 0;
@@ -71,9 +77,9 @@ namespace Server
                     }
 
                     // Si NO és un camp fix ni el diccionari el té ja, l'afegim com a extra
-                    if (!isFixedField && !PlayerData.PlayerData.Instance.Has(inputName))
+                    if (!isFixedField && !Data.PlayerData.Instance.Has(inputName))
                     {
-                        PlayerData.PlayerData.Instance.Set(inputName, "0"); // Valor per defecte
+                        Data.PlayerData.Instance.Set(inputName, "0"); // Valor per defecte
                         newFieldsCount++;
                     }
                 }
@@ -86,9 +92,16 @@ namespace Server
             while (true)
             {
                 yield return StartCoroutine(CheckForEventUpdates());
-
-                yield return StartCoroutine(GetItemPrice("sword"));
-                yield return StartCoroutine(GetItemPrice("shield"));
+                yield return StartCoroutine(CheckForShopUpdates());
+                yield return StartCoroutine(CheckForDecorationsUpdates());
+                
+                if (_currentActiveItems != null)
+                {
+                    foreach (string itemId in _currentActiveItems)
+                    {
+                        yield return StartCoroutine(GetItemPrice(itemId));
+                    }
+                }
 
                 // S'espera 5 segons abans de tornar a preguntar
                 yield return new WaitForSeconds(5f);
@@ -118,7 +131,48 @@ namespace Server
                 }
                 else
                 {
-                    Debug.LogWarning("[CRM] Error (reintentant en 5s): " + request.error);
+                    Debug.LogWarning("[CRM] Error obtenint event (reintentant en 5s): " + request.error);
+                }
+            }
+        }
+        
+        IEnumerator CheckForShopUpdates()
+        {
+            using (UnityWebRequest request = UnityWebRequest.Get(_shopUrl))
+            {
+                yield return request.SendWebRequest();
+
+                if (request.result == UnityWebRequest.Result.Success)
+                {
+                    string json = request.downloadHandler.text;
+                    ShopResponse shopResponse = JsonUtility.FromJson<ShopResponse>(json);
+            
+                    _currentActiveItems = shopResponse.items;
+                    OnShopItemsUpdated?.Invoke(_currentActiveItems);
+                }
+                else
+                {
+                    Debug.LogWarning("[CRM] Error obtenint items (reintentant en 5s): " + request.error);
+                }
+            }
+        }
+        
+        IEnumerator CheckForDecorationsUpdates()
+        {
+            using (UnityWebRequest request = UnityWebRequest.Get(_decorationsUrl))
+            {
+                yield return request.SendWebRequest();
+
+                if (request.result == UnityWebRequest.Result.Success)
+                {
+                    string json = request.downloadHandler.text;
+                    DecorationResponse decResponse = JsonUtility.FromJson<DecorationResponse>(json);
+                    
+                    OnDecorationsUpdated?.Invoke(decResponse.decorations);
+                }
+                else
+                {
+                    Debug.LogWarning("[CRM] Error obtenint decoracions (reintentant en 5s): " + request.error);
                 }
             }
         }
@@ -126,10 +180,10 @@ namespace Server
         IEnumerator GetItemPrice(string itemIdToAsk)
         {
             WWWForm form = new WWWForm();
-            PlayerData.PlayerData.Instance.itemId = itemIdToAsk;
+            Data.PlayerData.Instance.itemId = itemIdToAsk;
 
             // Enviem els camps FIXOS amb reflection
-            FieldInfo[] fixedFields = typeof(PlayerData.PlayerData)
+            FieldInfo[] fixedFields = typeof(Data.PlayerData)
                 .GetFields(BindingFlags.Public | BindingFlags.Instance);
 
             foreach (FieldInfo field in fixedFields)
@@ -137,12 +191,12 @@ namespace Server
                 // Saltem el diccionari extraFields (no és un camp simple)
                 if (field.Name == "extraFields") continue;
 
-                string fieldValue = field.GetValue(PlayerData.PlayerData.Instance).ToString();
+                string fieldValue = field.GetValue(Data.PlayerData.Instance).ToString();
                 form.AddField(field.Name, fieldValue);
             }
 
             // Enviem els camps DINÀMICS del diccionari
-            foreach (var entry in PlayerData.PlayerData.Instance.extraFields)
+            foreach (var entry in Data.PlayerData.Instance.extraFields)
             {
                 form.AddField(entry.Key, entry.Value);
             }
