@@ -10,6 +10,7 @@ app.use(bodyParser.urlencoded({ extended: true }));
 const db = new sqlite3.Database("./game_data.db");
 
 let debugSimulatedIp = "84.88.1.1";
+let globalDataVersion = Date.now();
 
 // ------------------------------------
 // INIT DB: Creació i migració de taules
@@ -47,6 +48,11 @@ db.serialize(() => {
         countries TEXT DEFAULT '[]',
         currency TEXT DEFAULT 'EUR',
         is_default INTEGER DEFAULT 0
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS cache_config (
+        endpoint TEXT PRIMARY KEY,
+        ttl_seconds INTEGER DEFAULT 300
     )`);
 
     // 2. Inserim la configuració base per defecte perquè el Dashboard no falli
@@ -134,6 +140,9 @@ function isActiveNow(entry, region, now) {
     } else if (entry.country && entry.country !== region) {
         return false;
     }
+
+    if (entry.fixed) return true;
+
     const cur = (now.getMonth() + 1) * 100 + now.getDate();
     if (entry.type === 'day') return cur === entry.month * 100 + entry.day;
     const s = entry.startMonth * 100 + entry.startDay;
@@ -189,11 +198,32 @@ function applyEventDiscounts(eds, region, now) {
 //  API ENDPOINTS (cridats per Unity)
 // ------------------------------------
 
+// Helper per llegir el TTL de la base de dades
+function getTtl(endpoint, cb) {
+    db.get("SELECT ttl_seconds FROM cache_config WHERE endpoint = ?", [endpoint], (err, row) => {
+        cb(row ? row.ttl_seconds : 300);
+    });
+}
+
+// GET /api/version
+app.get('/api/version', (req, res) => {
+    res.json({ version: globalDataVersion });
+});
+
+// POST /force-refresh
+app.post('/force-refresh', (req, res) => {
+    globalDataVersion = Date.now(); // Actualitzem la versió a l'instant actual
+    console.log("🚨 S'ha forçat l'actualització de la caché de tots els clients!");
+    res.redirect('/dashboard');
+});
+
 // GET /api/get-event
 app.get('/api/get-event', (req, res) => {
     db.get("SELECT name, message FROM events WHERE id = 1", (err, row) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json(row);
+        getTtl('get-event', (ttl) => {
+            res.json({ name: row.name, message: row.message, cacheTtlSeconds: ttl });
+        });
     });
 });
 
@@ -202,8 +232,10 @@ app.get('/api/get-event', (req, res) => {
 app.get('/api/get-contract', (req, res) => {
     db.get("SELECT inputs FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
         if (err) return res.status(500).json({ error: err.message });
-        if (!row) return res.json({ inputs: [] });
-        res.json({ inputs: activeNames(parseFields(row.inputs)) });
+        getTtl('get-contract', (ttl) => {
+            const activeInputs = row ? activeNames(parseFields(row.inputs)) : [];
+            res.json({ inputs: activeInputs, cacheTtlSeconds: ttl });
+        });
     });
 });
 
@@ -214,7 +246,9 @@ app.get('/api/get-shop', (req, res) => {
         const all = parseSeasonalItems(row && row.seasonal_items);
         getRegionForReq(req, (region) => {
             const active = all.filter(it => isActiveNow(it, region, new Date())).map(it => it.itemId);
-            res.json({ items: active });
+            getTtl('get-shop', (ttl) => {
+                res.json({ items: active, cacheTtlSeconds: ttl });
+            });
         });
     });
 });
@@ -226,7 +260,9 @@ app.get('/api/get-decorations', (req, res) => {
         const all = parseDecorations(row && row.decorations);
         getRegionForReq(req, (region) => {
             const active = all.filter(dc => isActiveNow(dc, region, new Date())).map(dc => dc.decorationId);
-            res.json({ decorations: active });
+            getTtl('get-decorations', (ttl) => {
+                res.json({ decorations: active, cacheTtlSeconds: ttl });
+            });
         });
     });
 });
@@ -258,7 +294,11 @@ app.post('/api/get-price', (req, res) => {
                 else if (field === 'currency') response.currency = row.currency;
                 else response[field] = row[field] !== undefined ? row[field] : 0;
             });
-            res.json(response);
+
+            getTtl('get-price', (ttl) => {
+                response.cacheTtlSeconds = ttl;
+                res.json(response);
+            });
         };
 
         const resolvePrice = (region, regions) => {
@@ -277,7 +317,7 @@ app.post('/api/get-price', (req, res) => {
                         applyAndRespond(defRow, discount);
                     });
                 } else {
-                    res.json({ error: 'Item not found' });
+                    getTtl('get-price', (ttl) => { res.json({ error: 'Item not found', cacheTtlSeconds: ttl }); });
                 }
             });
         };
@@ -361,15 +401,22 @@ app.get('/dashboard', (req, res) => {
             function renderDateList(entries, delUrl, badge) {
                 if (entries.length === 0) return '<p class="empty">Cap entrada definida.</p>';
                 return entries.map((entry, i) => {
-                    const d = entry.type === 'day'
-                        ? String(entry.day).padStart(2, '0') + '/' + String(entry.month).padStart(2, '0')
-                        : String(entry.startDay).padStart(2, '0') + '/' + String(entry.startMonth).padStart(2, '0')
-                        + ' → ' + String(entry.endDay).padStart(2, '0') + '/' + String(entry.endMonth).padStart(2, '0');
-                    const co = entry.country || 'Tots';
+                    let dateHtml = '';
+
+                    if (!entry.fixed) {
+                        const d = entry.type === 'day'
+                            ? String(entry.day).padStart(2, '0') + '/' + String(entry.month).padStart(2, '0')
+                            : String(entry.startDay).padStart(2, '0') + '/' + String(entry.startMonth).padStart(2, '0')
+                            + ' → ' + String(entry.endDay).padStart(2, '0') + '/' + String(entry.endMonth).padStart(2, '0');
+                        const co = (entry.activeRegions && entry.activeRegions.length > 0) ? entry.activeRegions.join(', ') : (entry.country || 'Tots');
+                        
+                        dateHtml = '<span class="arrow">·</span><code>' + d + '</code>'
+                            + '<span class="arrow">·</span><span style="color:var(--text-2);font-size:12px;">' + co + '</span>';
+                    }
+
                     return '<div class="rule-row" style="background:rgba(96,165,250,0.07);border-color:rgba(96,165,250,0.2);">'
                         + '<span class="rule-body">' + badge(entry)
-                        + '<span class="arrow">·</span><code>' + d + '</code>'
-                        + '<span class="arrow">·</span><span style="color:var(--text-2);font-size:12px;">' + co + '</span>'
+                        + dateHtml
                         + '</span>'
                         + '<a href="' + delUrl + '?index=' + i + '" onclick="return confirm(\'Eliminar?\')" class="del-btn">×</a>'
                         + '</div>';
@@ -377,7 +424,7 @@ app.get('/dashboard', (req, res) => {
             }
             const renderEventDiscounts = eds => renderDateList(eds, '/delete-event-discount',
                 e => '<strong style="color:#e2e4e9;">' + e.name + '</strong><span class="prio-badge" style="color:#60a5fa;background:rgba(96,165,250,0.1);border-color:rgba(96,165,250,0.3);">' + Math.round(e.discount * 100) + '%</span>');
-            const renderSeasonalItems = items => renderDateList(items, '/delete-seasonal-item',
+            const renderSeasonalItems = items => renderDateList(items, '/delete-items',
                 it => {
                     const badges = it.prices
                         ? Object.entries(it.prices).map(([rid, p]) =>
@@ -399,7 +446,10 @@ app.get('/dashboard', (req, res) => {
             const outputRows = renderFieldRows(outputs, 'out');
             const ruleRows = renderRules(rules);
             const eventDiscRows = renderEventDiscounts(eventDiscounts);
-            const seasonalItemRows = renderSeasonalItems(seasonalItems);
+            const fixedItems = seasonalItems.filter(it => it.fixed);
+            const seasonalOnly = seasonalItems.filter(it => !it.fixed);
+            const fixedItemRows = renderSeasonalItems(fixedItems);
+            const seasonalItemRows = renderSeasonalItems(seasonalOnly);
             const decorationRows = renderDecorations(decorations);
 
             // clientScript: s'injecta directament al HTML.
@@ -540,7 +590,10 @@ addGroup();
                     </div>`;
                         }).join('');
 
-                    res.send(`<!DOCTYPE html>
+                    db.all('SELECT * FROM cache_config ORDER BY endpoint', (err, cacheRows) => {
+                        cacheRows = cacheRows || [];
+
+                        res.send(`<!DOCTYPE html>
 <html lang="ca">
 <head>
     <meta charset="UTF-8">
@@ -1008,6 +1061,53 @@ addGroup();
     </nav>
 
     <div class="tab-panel" id="tab-config">
+    <div class="section">
+        <div class="section-head">
+            <span class="section-title">Caché del Client</span>
+            <span class="section-hint">Temps que Unity guarda les dades en local sense tornar a preguntar</span>
+        </div>
+        <div class="section-body">
+            <form action="/update-cache-config" method="POST">
+                ${(() => {
+                                const endpointsList = ['get-event', 'get-shop', 'get-decorations', 'get-price', 'get-contract'];
+                                const labels = {
+                                    'get-event': "Estat de l'Esdeveniment",
+                                    'get-shop': 'Items de la Botiga',
+                                    'get-decorations': "Decoracions d'Escena",
+                                    'get-price': 'Preus',
+                                    'get-contract': 'Contracte API',
+                                };
+
+                                return endpointsList.map(ep => {
+                                    const row = cacheRows.find(r => r.endpoint === ep);
+                                    const ttl = row ? row.ttl_seconds : 300;
+                                    const display = ttl >= 3600 ? Math.floor(ttl / 3600) + 'h' : Math.floor(ttl / 60) + 'min';
+
+                                    return `<div class="field-row" style="margin-bottom:6px;">
+                            <span class="field-name" style="min-width:200px;">${labels[ep]}</span>
+                            <span class="prio-badge" style="color:#60a5fa;background:rgba(96,165,250,0.1);border-color:rgba(96,165,250,0.3);">${display}</span>
+                            <input type="number" name="ttl_${ep}" value="${ttl}" min="10" style="width:80px;">
+                            <span class="add-label">s</span>
+                        </div>`;
+                                }).join('');
+                            })()}
+                <div style="margin-top:12px;">
+                    <button type="submit" class="btn-save" style="width:auto;padding:9px 24px;font-size:12px;">Guardar TTL</button>
+                </div>
+                <p style="font-size:11px;color:var(--text-3);margin-top:8px;">300=5min · 900=15min · 3600=1h · 86400=1dia</p>
+            </form>
+
+            <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border);">
+                <form action="/force-refresh" method="POST">
+                    <span class="section-title" style="color: #f87171; display:block; margin-bottom: 8px;">Botó d'Emergència</span>
+                    <p style="font-size:12px; color:var(--text-3); margin-bottom: 12px;">Força a tots els jugadors actius a netejar la seva memòria i descarregar les dades noves a l'instant (ignorant els TTLs).</p>
+                    <button type="submit" class="btn-save" style="background: rgba(248,113,113,0.1); color: #f87171; border: 1px solid rgba(248,113,113,0.3); width: auto; padding: 9px 24px;">
+                    ⚠️ Forçar Refresc Global
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
     <!-- ══ REGIONS ══ -->
     <div class="section">
         <div class="section-head">
@@ -1167,23 +1267,36 @@ addGroup();
     <div class="tab-panel" id="tab-contingut">
     <div class="section">
         <div class="section-head">
-            <span class="section-title">Items de Temporada</span>
-            <span class="section-hint">Items que només apareixen en èpoques concretes</span>
+            <span class="section-title">Gestió d'Items</span>
+            <span class="section-hint">Afegeix items fixes (sempre visibles) o de temporada (per dates)</span>
         </div>
         <div class="section-body">
-            ${seasonalItemRows}
-            <form action="/add-seasonal-item" method="POST">
-                <div class="add-row" style="margin-top:10px;flex-wrap:wrap;gap:8px;align-items:center;">
+            <!-- Items fixos -->
+            <div class="sub-label">Items Fixos</div>
+            ${fixedItemRows.length ? fixedItemRows : '<p class="empty">Cap item fix definit.</p>'}
+            <!-- Items de temporada -->
+            <div class="sub-label" style="margin-top:16px;">Items de Temporada</div>
+            ${seasonalItemRows.length ? seasonalItemRows : '<p class="empty">Cap item de temporada definit.</p>'}
+            <!-- Formulari d'afegir -->
+            <form action="/add-items" method="POST" id="form-add-items">
+                <div class="add-row" style="margin-top:14px;flex-wrap:wrap;gap:8px;align-items:center;">
                     <span class="add-label">ID</span>
-                    <input type="text" name="itemId" placeholder="ex: rosa" style="width:85px;" required>
+                    <input type="text" name="itemId" placeholder="ex: sword" style="width:85px;" required>
                     <span class="add-label">Nom</span>
-                    <input type="text" name="name" placeholder="ex: Rosa" style="width:85px;">
-                    <select name="type" onchange="toggleType(this,'rngadd-seasonal-item','dayadd-seasonal-item')" style="min-width:120px;">
-                        <option value="range">Rang de dates</option>
-                        <option value="day">Dia exacte</option>
-                    </select>
+                    <input type="text" name="name" placeholder="ex: Espasa" style="width:85px;">
+                    <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-2);cursor:pointer;">
+                        <input type="checkbox" name="fixed" value="1" id="chk-fixed"
+                               onchange="toggleFixed(this.checked)">
+                        Item fix (sempre visible)
+                    </label>
+                    <div id="type-selector" style="display:flex;gap:8px;align-items:center;">
+                        <select name="type" onchange="toggleType(this,'rngadd-items','dayadd-items')">
+                            <option value="range">Rang de dates</option>
+                            <option value="day">Dia exacte</option>
+                        </select>
+                    </div>
                 </div>
-                <!-- Preu per regió: omple'l = item visible en aquella regió; buit = no apareix -->
+                <!-- Preus per regió -->
                 ${regions.map(r => `
                 <div class="add-row" style="margin-top:4px;flex-wrap:wrap;gap:8px;align-items:center;">
                     <span class="prio-badge" style="color:#a78bfa;background:rgba(167,139,250,0.1);border-color:rgba(167,139,250,0.3);">${r.id}</span>
@@ -1196,27 +1309,35 @@ addGroup();
                         <option value="GBP" ${r.currency === 'GBP' ? 'selected' : ''}>GBP</option>
                     </select>
                 </div>`).join('')}
-                <div id="rngadd-seasonal-item" class="add-row" style="margin-top:6px;flex-wrap:wrap;gap:8px;">
-                    <span class="add-label">Inici</span>
-                    <input type="number" name="startDay"   min="1" max="31" placeholder="DD" style="width:52px;">
-                    <span class="add-label">/</span>
-                    <input type="number" name="startMonth" min="1" max="12" placeholder="MM" style="width:52px;">
-                    <span class="add-label" style="margin-left:8px;">Fi</span>
-                    <input type="number" name="endDay"     min="1" max="31" placeholder="DD" style="width:52px;">
-                    <span class="add-label">/</span>
-                    <input type="number" name="endMonth"   min="1" max="12" placeholder="MM" style="width:52px;">
-                </div>
-                <div id="dayadd-seasonal-item" class="add-row" style="display:none;margin-top:6px;gap:8px;">
-                    <span class="add-label">Dia</span>
-                    <input type="number" name="day"   min="1" max="31" placeholder="DD" style="width:52px;">
-                    <span class="add-label">/</span>
-                    <input type="number" name="month" min="1" max="12" placeholder="MM" style="width:52px;">
+                <!-- Dates (ocultes si és fix) -->
+                <div id="date-fields">
+                    <div id="rngadd-items" class="add-row" style="margin-top:6px;flex-wrap:wrap;gap:8px;">
+                        <span class="add-label">Inici</span>
+                        <input type="number" name="startDay"   min="1" max="31" placeholder="DD" style="width:52px;">
+                        <span class="add-label">/</span>
+                        <input type="number" name="startMonth" min="1" max="12" placeholder="MM" style="width:52px;">
+                        <span class="add-label" style="margin-left:8px;">Fi</span>
+                        <input type="number" name="endDay"     min="1" max="31" placeholder="DD" style="width:52px;">
+                        <span class="add-label">/</span>
+                        <input type="number" name="endMonth"   min="1" max="12" placeholder="MM" style="width:52px;">
+                    </div>
+                    <div id="dayadd-items" class="add-row" style="display:none;margin-top:6px;gap:8px;">
+                        <span class="add-label">Dia</span>
+                        <input type="number" name="day"   min="1" max="31" placeholder="DD" style="width:52px;">
+                        <span class="add-label">/</span>
+                        <input type="number" name="month" min="1" max="12" placeholder="MM" style="width:52px;">
+                    </div>
                 </div>
                 <div class="add-row" style="margin-top:6px;gap:8px;align-items:center;">
                     <button type="submit" class="btn-add" style="margin-left:auto;">Afegir item</button>
                 </div>
-                <p style="font-size:11px;color:var(--text-3);margin-top:8px;">Ex: ID <b>rosa</b> · dia 11/09 · CAT &nbsp;·&nbsp; ID <b>espasa_daurada</b> · rang 24/12→06/01 · Tots</p>
             </form>
+            <script>
+            function toggleFixed(isFixed) {
+                document.getElementById("date-fields").style.display = isFixed ? "none" : "block";
+                document.getElementById("type-selector").style.display = isFixed ? "none" : "flex";
+            }
+            </script>
         </div>
     </div>
     <div class="section">
@@ -1265,27 +1386,54 @@ addGroup();
     <div class="section">
         <div class="section-head">
             <span class="section-title">Preus de la Botiga</span>
-            <span class="section-hint">Preus per als items per regió</span>
+            <span class="section-hint">Tots els items · Edita el preu directament sense esborrar</span>
         </div>
         <div class="section-body">
-            ${basePriceRows}
-            <form action="/add-base-price" method="POST">
-                <div class="add-row" style="margin-top:10px;flex-wrap:wrap;gap:8px;align-items:center;">
-                    <span class="add-label">Item ID</span>
-                    <input type="text" name="itemId" placeholder="sword" style="width:80px;" required>
-                    <span class="add-label">Regió</span>
-                    <select name="region">${regionOptions}</select>
-                    <span class="add-label">Preu</span>
-                    <input type="number" step="0.01" name="price" placeholder="9.99" style="width:75px;" required>
-                    <select name="currency">
-                        <option value="EUR">EUR</option>
-                        <option value="USD">USD</option>
-                        <option value="JPY">JPY</option>
-                        <option value="GBP">GBP</option>
-                    </select>
-                    <button type="submit" class="btn-add" style="margin-left:auto;">Desar preu</button>
-                </div>
-            </form>
+            ${(() => {
+                                // Separem items fixos i de temporada per mostrar-los en grups
+                                const allItems = seasonalItems;
+                                if (!allItems.length) return '<p class="empty">Cap item definit. Afegeix items a la secció Gestió d\'Items.</p>';
+
+                                const renderGroup = (items, label, color) => {
+                                    if (!items.length) return '';
+                                    const rows = items.map(it => {
+                                        const regionRows = regions.map(r => {
+                                            const existing = it.prices && it.prices[r.id];
+                                            const curPrice = existing ? existing.price : '';
+                                            const curCurr = existing ? existing.currency : r.currency;
+                                            return `<form action="/update-item-price" method="POST"
+                                         style="display:inline-flex;align-items:center;gap:6px;margin-right:8px;margin-bottom:4px;">
+                                <input type="hidden" name="itemId" value="${it.itemId}">
+                                <input type="hidden" name="region" value="${r.id}">
+                                <span class="prio-badge" style="color:${color};background:rgba(167,139,250,0.1);border-color:rgba(167,139,250,0.25);">${r.id}</span>
+                                <input type="number" step="0.01" name="price"
+                                       value="${curPrice}" placeholder="—"
+                                       style="width:72px;border-color:${existing ? 'var(--border2)' : 'var(--border)'};">
+                                <select name="currency" style="min-width:60px;">
+                                    <option value="EUR" ${curCurr === 'EUR' ? 'selected' : ''}>EUR</option>
+                                    <option value="USD" ${curCurr === 'USD' ? 'selected' : ''}>USD</option>
+                                    <option value="JPY" ${curCurr === 'JPY' ? 'selected' : ''}>JPY</option>
+                                    <option value="GBP" ${curCurr === 'GBP' ? 'selected' : ''}>GBP</option>
+                                </select>
+                                <button type="submit" class="btn-add" style="padding:5px 10px;font-size:11px;">✓</button>
+                            </form>`;
+                                        }).join('');
+                                        return `<div class="rule-row" style="flex-direction:column;align-items:flex-start;gap:8px;margin-bottom:8px;">
+                            <div style="display:flex;align-items:center;gap:8px;width:100%;">
+                                <code style="color:${color};font-size:13px;">${it.itemId}</code>
+                                <span style="color:var(--text-2);font-size:12px;">${it.name}</span>
+                                <a href="/delete-items?index=${allItems.indexOf(it)}"
+                                   onclick="return confirm('Eliminar ${it.itemId}?')" class="del-btn" style="margin-left:auto;">×</a>
+                            </div>
+                            <div style="display:flex;flex-wrap:wrap;gap:4px;">${regionRows}</div>
+                        </div>`;
+                                    }).join('');
+                                    return `<div class="sub-label">${label}</div>${rows}`;
+                                };
+
+                                return renderGroup(fixedItems, 'Items Fixos', '#34d399')
+                                    + renderGroup(seasonalOnly, 'Items de Temporada', '#a78bfa');
+                            })()}
         </div>
     </div>
     </div>
@@ -1369,6 +1517,7 @@ addGroup();
 </div>
 </body>
 </html>`);
+                    });
                 });
             });
         });
@@ -1536,16 +1685,22 @@ app.get('/delete-event-discount', (req, res) => {
     });
 });
 
-// POST /add-seasonal-item
-app.post('/add-seasonal-item', (req, res) => {
+// POST /add-items
+app.post('/add-items', (req, res) => {
     const b = req.body;
     if (!b.itemId) return res.redirect('/dashboard');
-    const entry = { itemId: b.itemId.trim(), name: (b.name || '').trim(), type: b.type };
-    if (b.type === 'day') {
-        entry.day = parseInt(b.day); entry.month = parseInt(b.month);
+    const isFixed = b.fixed === '1';
+    const entry = { itemId: b.itemId.trim(), name: (b.name || '').trim() };
+    if (isFixed) {
+        entry.fixed = true;
     } else {
-        entry.startDay = parseInt(b.startDay); entry.startMonth = parseInt(b.startMonth);
-        entry.endDay = parseInt(b.endDay); entry.endMonth = parseInt(b.endMonth);
+        entry.type = b.type;
+        if (b.type === 'day') {
+            entry.day = parseInt(b.day); entry.month = parseInt(b.month);
+        } else {
+            entry.startDay = parseInt(b.startDay); entry.startMonth = parseInt(b.startMonth);
+            entry.endDay = parseInt(b.endDay); entry.endMonth = parseInt(b.endMonth);
+        }
     }
     db.all('SELECT * FROM regions', (err, regions) => {
         regions = regions || [];
@@ -1572,14 +1727,40 @@ app.post('/add-seasonal-item', (req, res) => {
     });
 });
 
-// GET /delete-seasonal-item
-app.get('/delete-seasonal-item', (req, res) => {
+// GET /delete-items
+app.get('/delete-items', (req, res) => {
     const index = parseInt(req.query.index);
     db.get("SELECT seasonal_items FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
         let list = parseSeasonalItems(row && row.seasonal_items);
-        if (!isNaN(index) && index >= 0 && index < list.length) list.splice(index, 1);
+
+        if (!isNaN(index) && index >= 0 && index < list.length) {
+            // 1. Agafem l'ítem que estem a punt d'esborrar
+            const deletedItem = list.splice(index, 1)[0];
+
+            // 2. Netejem TOTS els seus preus de la taula shop_prices
+            if (deletedItem && deletedItem.itemId) {
+                db.run('DELETE FROM shop_prices WHERE item_id = ?', [deletedItem.itemId]);
+            }
+        }
+
+        // 3. Guardem la llista actualitzada sense l'ítem
         db.run("UPDATE api_contract SET seasonal_items = ? WHERE endpoint = 'get-price'",
             [JSON.stringify(list)], () => res.redirect('/dashboard'));
+    });
+});
+
+// GET /fix-db (Botó d'emergència per arreglar la taula)
+app.get('/fix-db', (req, res) => {
+    db.run('DROP TABLE IF EXISTS shop_prices', () => {
+        db.run(`CREATE TABLE shop_prices (
+            item_id TEXT,
+            region TEXT,
+            price REAL,
+            currency TEXT,
+            PRIMARY KEY (item_id, region)
+        )`, () => {
+            res.send("<h1>Taula arreglada!</h1><p>Ja pots tornar al <a href='/dashboard'>Dashboard</a> i tornar a guardar els preus. Ara es sobreescriuran correctament!</p>");
+        });
     });
 });
 
@@ -1645,6 +1826,43 @@ app.get('/delete-base-price', (req, res) => {
     const { itemId, region } = req.query;
     db.run('DELETE FROM shop_prices WHERE item_id = ? AND region = ?', [itemId, region],
         () => res.redirect('/dashboard'));
+});
+
+// POST /update-cache-config
+app.post('/update-cache-config', (req, res) => {
+    const endpoints = ['get-event', 'get-shop', 'get-decorations', 'get-price', 'get-contract'];
+    Promise.all(endpoints.map(ep => {
+        const ttl = parseInt(req.body['ttl_' + ep]);
+        if (!isNaN(ttl) && ttl >= 10)
+            return new Promise(r => db.run(
+                'INSERT OR REPLACE INTO cache_config (endpoint, ttl_seconds) VALUES (?,?)',
+                [ep, ttl], r));
+        return Promise.resolve();
+    })).then(() => res.redirect('/dashboard'));
+});
+
+// POST /update-item-price — edita preu d'un item+regió sense esborrar-lo
+app.post('/update-item-price', (req, res) => {
+    const { itemId, region, price, currency } = req.body;
+    if (!itemId || !region || !price) return res.redirect('/dashboard');
+    const priceVal = parseFloat(price);
+    db.run('INSERT OR REPLACE INTO shop_prices (item_id, region, price, currency) VALUES (?,?,?,?)',
+        [itemId, region, priceVal, currency || 'EUR'], (err) => {
+            if (err) return console.error(err);
+            // Actualitzem també el camp prices dins de l'entry
+            db.get("SELECT seasonal_items FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
+                const list = parseSeasonalItems(row && row.seasonal_items);
+                const entry = list.find(it => it.itemId === itemId);
+                if (entry) {
+                    if (!entry.prices) entry.prices = {};
+                    entry.prices[region] = { price: priceVal, currency: currency || 'EUR' };
+                    if (!entry.activeRegions) entry.activeRegions = [];
+                    if (!entry.activeRegions.includes(region)) entry.activeRegions.push(region);
+                    db.run("UPDATE api_contract SET seasonal_items = ? WHERE endpoint = 'get-price'",
+                        [JSON.stringify(list)], () => res.redirect('/dashboard'));
+                } else { res.redirect('/dashboard'); }
+            });
+        });
 });
 
 // ------------------------------------

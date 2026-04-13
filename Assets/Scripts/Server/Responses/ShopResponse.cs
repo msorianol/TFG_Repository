@@ -6,5 +6,6 @@ namespace Server.Responses
     public class ShopResponse
     {
         public string[] items;
+        public int cacheTtlSeconds;
     }
 }

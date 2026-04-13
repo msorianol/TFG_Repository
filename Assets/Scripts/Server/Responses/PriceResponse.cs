@@ -7,5 +7,6 @@ namespace Server.Responses
     {
         public float price;
         public string currency;
+        public int cacheTtlSeconds;
     }
 }

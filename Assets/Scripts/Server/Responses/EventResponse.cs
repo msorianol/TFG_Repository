@@ -7,5 +7,6 @@ namespace Server.Responses
     {
         public string name;
         public string message;
+        public int cacheTtlSeconds;
     }
 }

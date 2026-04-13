@@ -7,223 +7,305 @@ using Server.Responses;
 
 namespace Server
 {
+    /// <summary>
+    /// Gestor de comunicació amb el servidor LiveOps.
+    ///
+    /// Flux de caché:
+    ///   1. A l'inici i cada 5s: comprova si les dades locals han caducat.
+    ///   2. Si NO han caducat: usa les dades del fitxer local sense fer cap petició.
+    ///   3. Si SÍ han caducat: fa la petició, guarda la resposta amb el TTL
+    ///      que el servidor indica (cacheTtlSeconds) i aplica els canvis.
+    ///
+    /// Els fitxers de caché es guarden a Application.persistentDataPath:
+    ///   liveops_event.json, liveops_shop.json, liveops_price_sword.json, etc.
+    /// </summary>
     public class CRM_Manager : MonoBehaviour
     {
+        // URLs
+        private readonly string _versionUrl = "http://localhost:3000/api/version";
         private readonly string _eventUrl = "http://localhost:3000/api/get-event";
         private readonly string _priceUrl = "http://localhost:3000/api/get-price";
         private readonly string _contractUrl = "http://localhost:3000/api/get-contract";
         private readonly string _shopUrl = "http://localhost:3000/api/get-shop";
         private readonly string _decorationsUrl = "http://localhost:3000/api/get-decorations";
 
+        // Claus de caché
+        private const string CACHE_EVENT = "event";
+        private const string CACHE_SHOP = "shop";
+        private const string CACHE_CONTRACT = "contract";
+        private const string CACHE_DECORATIONS = "decorations";
+
+        private long _currentDataVersion = 0;
         private string _lastEventName = "";
+        private string[] _currentActiveItems = new string[0];
 
         public static event Action<string, float, string> OnPriceUpdated;
         public static event Action<string> OnEventUpdated;
         public static event Action<string[]> OnShopItemsUpdated;
         public static event Action<string[]> OnDecorationsUpdated;
-        
-        private string[] _currentActiveItems = new string[0];
 
         void Start()
         {
             StartCoroutine(InitRoutine());
         }
 
-        // Primer de tot, baixem el contracte del servidor per saber quins camps extra necessita
         IEnumerator InitRoutine()
         {
-            yield return StartCoroutine(FetchContractAndPopulateExtraFields());
+            yield return StartCoroutine(FetchContract());
             StartCoroutine(PollServerRoutine());
         }
 
-        // Demana al servidor la llista d'inputs actius. Crea automàticament les entrades al diccionari extraFields de PlayerData per als camps nous
-        IEnumerator FetchContractAndPopulateExtraFields()
-        {
-            using (UnityWebRequest request = UnityWebRequest.Get(_contractUrl))
-            {
-                yield return request.SendWebRequest();
-
-                if (request.result != UnityWebRequest.Result.Success)
-                {
-                    Debug.LogWarning("[CRM] No s'ha pogut descarregar el contracte: " + request.error);
-                    yield break;
-                }
-
-                ContractResponse contract = JsonUtility.FromJson<ContractResponse>(request.downloadHandler.text);
-
-                if (contract == null || contract.inputs == null)
-                {
-                    Debug.LogWarning("[CRM] Contracte buit o mal format.");
-                    yield break;
-                }
-
-                // Obtenim els camps fixos de PlayerData per comparar
-                FieldInfo[] fixedFields = typeof(Data.PlayerData)
-                    .GetFields(BindingFlags.Public | BindingFlags.Instance);
-
-                int newFieldsCount = 0;
-
-                foreach (string inputName in contract.inputs)
-                {
-                    // Comprovem si és un camp fix (itemId, playerLevel, etc.)
-                    bool isFixedField = false;
-                    foreach (FieldInfo f in fixedFields)
-                    {
-                        if (f.Name == inputName)
-                        {
-                            isFixedField = true;
-                            break;
-                        }
-                    }
-
-                    // Si NO és un camp fix ni el diccionari el té ja, l'afegim com a extra
-                    if (!isFixedField && !Data.PlayerData.Instance.Has(inputName))
-                    {
-                        Data.PlayerData.Instance.Set(inputName, "0"); // Valor per defecte
-                        newFieldsCount++;
-                    }
-                }
-            }
-        }
-
-        // Es comproven esdeveniments i preus
+        // Cada 5s comprova si la caché ha caducat.
+        // Si no ha caducat, usa les dades locals sense fer cap petició.
         IEnumerator PollServerRoutine()
         {
             while (true)
             {
-                yield return StartCoroutine(CheckForEventUpdates());
-                yield return StartCoroutine(CheckForShopUpdates());
-                yield return StartCoroutine(CheckForDecorationsUpdates());
+                yield return StartCoroutine(FetchVersion());
                 
+                yield return StartCoroutine(FetchEvent());
+                yield return StartCoroutine(FetchShop());
+                yield return StartCoroutine(FetchDecorations());
+
                 if (_currentActiveItems != null)
                 {
                     foreach (string itemId in _currentActiveItems)
-                    {
-                        yield return StartCoroutine(GetItemPrice(itemId));
-                    }
+                        yield return StartCoroutine(FetchPrice(itemId));
                 }
 
-                // S'espera 5 segons abans de tornar a preguntar
                 yield return new WaitForSeconds(5f);
             }
         }
 
-        IEnumerator CheckForEventUpdates()
+        // CONTRACTE
+        IEnumerator FetchContract()
         {
-            // S'afegeix l'hora actual a la URL per evitar caché
-            string antiCacheUrl = _eventUrl + "?t=" + DateTime.Now.Ticks;
-
-            using (UnityWebRequest request = UnityWebRequest.Get(antiCacheUrl))
+            string cached = LiveOpsCache.Load(CACHE_CONTRACT);
+            if (cached != null)
             {
-                yield return request.SendWebRequest();
+                ApplyContract(cached);
+                yield break;
+            }
 
-                if (request.result == UnityWebRequest.Result.Success)
+            using (UnityWebRequest req = UnityWebRequest.Get(_contractUrl))
+            {
+                yield return req.SendWebRequest();
+                if (req.result != UnityWebRequest.Result.Success)
                 {
-                    string json = request.downloadHandler.text;
-                    EventResponse eventResponse = JsonUtility.FromJson<EventResponse>(json);
+                    Debug.LogWarning("[CRM] No s'ha pogut descarregar el contracte: " + req.error);
+                    yield break;
+                }
 
-                    // Només s'apliquen canvis si l'esdeveniment és nou
-                    if (eventResponse.name != _lastEventName)
+                string json = req.downloadHandler.text;
+                ContractResponse r = JsonUtility.FromJson<ContractResponse>(json);
+                int ttl = (r != null && r.cacheTtlSeconds > 0) ? r.cacheTtlSeconds : 86400;
+                LiveOpsCache.Save(CACHE_CONTRACT, json, ttl);
+                ApplyContract(json);
+            }
+        }
+
+        void ApplyContract(string json)
+        {
+            ContractResponse contract = JsonUtility.FromJson<ContractResponse>(json);
+            if (contract == null || contract.inputs == null) return;
+
+            FieldInfo[] fixedFields = typeof(Data.PlayerData)
+                .GetFields(BindingFlags.Public | BindingFlags.Instance);
+
+            foreach (string inputName in contract.inputs)
+            {
+                bool isFixed = false;
+                foreach (FieldInfo f in fixedFields)
+                    if (f.Name == inputName)
                     {
-                        _lastEventName = eventResponse.name;
-                        ApplyEventChanges(eventResponse);
+                        isFixed = true;
+                        break;
+                    }
+
+                if (!isFixed && !Data.PlayerData.Instance.Has(inputName))
+                    Data.PlayerData.Instance.Set(inputName, "0");
+            }
+        }
+        
+        // VERSION
+        IEnumerator FetchVersion()
+        {
+            using (UnityWebRequest req = UnityWebRequest.Get(_versionUrl))
+            {
+                yield return req.SendWebRequest();
+                if (req.result == UnityWebRequest.Result.Success)
+                {
+                    VersionResponse r = JsonUtility.FromJson<VersionResponse>(req.downloadHandler.text);
+                    
+                    if (_currentDataVersion == 0) 
+                    {
+                        _currentDataVersion = r.version;
+                    }
+                    else if (r.version > _currentDataVersion)
+                    {
+                        Debug.LogWarning("🚨 El servidor ha forçat un refresc! Netejant caché...");
+                        LiveOpsCache.InvalidateAll();
+                        _currentDataVersion = r.version;
                     }
                 }
-                else
-                {
-                    Debug.LogWarning("[CRM] Error obtenint event (reintentant en 5s): " + request.error);
-                }
             }
         }
-        
-        IEnumerator CheckForShopUpdates()
+
+        // EVENTS
+        IEnumerator FetchEvent()
         {
-            using (UnityWebRequest request = UnityWebRequest.Get(_shopUrl))
+            string cached = LiveOpsCache.Load(CACHE_EVENT);
+            if (cached != null)
             {
-                yield return request.SendWebRequest();
-
-                if (request.result == UnityWebRequest.Result.Success)
-                {
-                    string json = request.downloadHandler.text;
-                    ShopResponse shopResponse = JsonUtility.FromJson<ShopResponse>(json);
-            
-                    _currentActiveItems = shopResponse.items;
-                    OnShopItemsUpdated?.Invoke(_currentActiveItems);
-                }
-                else
-                {
-                    Debug.LogWarning("[CRM] Error obtenint items (reintentant en 5s): " + request.error);
-                }
+                ApplyEvent(cached);
+                yield break;
             }
-        }
-        
-        IEnumerator CheckForDecorationsUpdates()
-        {
-            using (UnityWebRequest request = UnityWebRequest.Get(_decorationsUrl))
+
+            string url = _eventUrl + "?t=" + DateTime.Now.Ticks;
+            using (UnityWebRequest req = UnityWebRequest.Get(url))
             {
-                yield return request.SendWebRequest();
+                yield return req.SendWebRequest();
+                if (req.result != UnityWebRequest.Result.Success)
+                {
+                    Debug.LogWarning("[CRM] Error obtenint event (reintentant en 5s): " + req.error);
+                    yield break;
+                }
 
-                if (request.result == UnityWebRequest.Result.Success)
-                {
-                    string json = request.downloadHandler.text;
-                    DecorationResponse decResponse = JsonUtility.FromJson<DecorationResponse>(json);
-                    
-                    OnDecorationsUpdated?.Invoke(decResponse.decorations);
-                }
-                else
-                {
-                    Debug.LogWarning("[CRM] Error obtenint decoracions (reintentant en 5s): " + request.error);
-                }
+                string json = req.downloadHandler.text;
+                EventResponse r = JsonUtility.FromJson<EventResponse>(json);
+                int ttl = (r != null && r.cacheTtlSeconds > 0) ? r.cacheTtlSeconds : 300;
+                LiveOpsCache.Save(CACHE_EVENT, json, ttl);
+                ApplyEvent(json);
             }
         }
 
-        IEnumerator GetItemPrice(string itemIdToAsk)
+        void ApplyEvent(string json)
         {
+            EventResponse r = JsonUtility.FromJson<EventResponse>(json);
+            if (r == null || r.name == _lastEventName) return;
+            _lastEventName = r.name;
+            OnEventUpdated?.Invoke(r.name);
+            Debug.Log("[CRM] Missatge del servidor: " + r.message);
+        }
+
+        // BOTIGA
+        IEnumerator FetchShop()
+        {
+            string cached = LiveOpsCache.Load(CACHE_SHOP);
+            if (cached != null)
+            {
+                ApplyShop(cached);
+                yield break;
+            }
+
+            using (UnityWebRequest req = UnityWebRequest.Get(_shopUrl))
+            {
+                yield return req.SendWebRequest();
+                if (req.result != UnityWebRequest.Result.Success)
+                {
+                    Debug.LogWarning("[CRM] Error obtenint items (reintentant en 5s): " + req.error);
+                    yield break;
+                }
+
+                string json = req.downloadHandler.text;
+                ShopResponse r = JsonUtility.FromJson<ShopResponse>(json);
+                int ttl = (r != null && r.cacheTtlSeconds > 0) ? r.cacheTtlSeconds : 900;
+                LiveOpsCache.Save(CACHE_SHOP, json, ttl);
+                ApplyShop(json);
+            }
+        }
+
+        void ApplyShop(string json)
+        {
+            ShopResponse r = JsonUtility.FromJson<ShopResponse>(json);
+            if (r == null) return;
+            _currentActiveItems = r.items ?? new string[0];
+            OnShopItemsUpdated?.Invoke(_currentActiveItems);
+        }
+
+        // DECORACIONS
+        IEnumerator FetchDecorations()
+        {
+            string cached = LiveOpsCache.Load(CACHE_DECORATIONS);
+            if (cached != null)
+            {
+                ApplyDecorations(cached);
+                yield break;
+            }
+
+            using (UnityWebRequest req = UnityWebRequest.Get(_decorationsUrl))
+            {
+                yield return req.SendWebRequest();
+                if (req.result != UnityWebRequest.Result.Success)
+                {
+                    Debug.LogWarning("[CRM] Error obtenint decoracions (reintentant en 5s): " + req.error);
+                    yield break;
+                }
+
+                string json = req.downloadHandler.text;
+                DecorationResponse r = JsonUtility.FromJson<DecorationResponse>(json);
+                int ttl = (r != null && r.cacheTtlSeconds > 0) ? r.cacheTtlSeconds : 900;
+                LiveOpsCache.Save(CACHE_DECORATIONS, json, ttl);
+                ApplyDecorations(json);
+            }
+        }
+
+        void ApplyDecorations(string json)
+        {
+            DecorationResponse r = JsonUtility.FromJson<DecorationResponse>(json);
+            if (r == null) return;
+            OnDecorationsUpdated?.Invoke(r.decorations);
+        }
+
+        // PREUS
+        IEnumerator FetchPrice(string itemId)
+        {
+            string cacheKey = "price_" + itemId;
+            string cached = LiveOpsCache.Load(cacheKey);
+            if (cached != null)
+            {
+                ApplyPrice(itemId, cached);
+                yield break;
+            }
+
             WWWForm form = new WWWForm();
-            Data.PlayerData.Instance.itemId = itemIdToAsk;
+            Data.PlayerData.Instance.itemId = itemId;
 
-            // Enviem els camps FIXOS amb reflection
             FieldInfo[] fixedFields = typeof(Data.PlayerData)
                 .GetFields(BindingFlags.Public | BindingFlags.Instance);
 
             foreach (FieldInfo field in fixedFields)
             {
-                // Saltem el diccionari extraFields (no és un camp simple)
                 if (field.Name == "extraFields") continue;
-
-                string fieldValue = field.GetValue(Data.PlayerData.Instance).ToString();
-                form.AddField(field.Name, fieldValue);
+                form.AddField(field.Name, field.GetValue(Data.PlayerData.Instance).ToString());
             }
 
-            // Enviem els camps DINÀMICS del diccionari
             foreach (var entry in Data.PlayerData.Instance.extraFields)
-            {
                 form.AddField(entry.Key, entry.Value);
-            }
 
-            using (UnityWebRequest request = UnityWebRequest.Post(_priceUrl, form))
+            using (UnityWebRequest req = UnityWebRequest.Post(_priceUrl, form))
             {
-                yield return request.SendWebRequest();
-
-                if (request.result == UnityWebRequest.Result.Success)
+                yield return req.SendWebRequest();
+                if (req.result != UnityWebRequest.Result.Success)
                 {
-                    PriceResponse response = JsonUtility.FromJson<PriceResponse>(request.downloadHandler.text);
+                    Debug.LogWarning("[CRM] Error obtenint preu de " + itemId + ": " + req.error);
+                    yield break;
+                }
 
-                    string currencySymbol = string.IsNullOrEmpty(response.currency) ? "?" : response.currency;
-                    OnPriceUpdated?.Invoke(itemIdToAsk, response.price, currencySymbol);
-                }
-                else
-                {
-                    Debug.LogWarning("[CRM] Error obtenint preu de " + itemIdToAsk + ": " + request.error);
-                }
+                string json = req.downloadHandler.text;
+                PriceResponse r = JsonUtility.FromJson<PriceResponse>(json);
+                int ttl = (r != null && r.cacheTtlSeconds > 0) ? r.cacheTtlSeconds : 3600;
+                LiveOpsCache.Save(cacheKey, json, ttl);
+                ApplyPrice(itemId, json);
             }
         }
 
-        void ApplyEventChanges(EventResponse response)
+        void ApplyPrice(string itemId, string json)
         {
-            OnEventUpdated?.Invoke(response.name);
-
-            Debug.Log("[CRM] Missatge del servidor: " + response.message);
+            PriceResponse r = JsonUtility.FromJson<PriceResponse>(json);
+            if (r == null) return;
+            string symbol = string.IsNullOrEmpty(r.currency) ? "?" : r.currency;
+            OnPriceUpdated?.Invoke(itemId, r.price, symbol);
         }
     }
 }

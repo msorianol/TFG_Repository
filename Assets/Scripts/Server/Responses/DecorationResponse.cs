@@ -6,5 +6,6 @@ namespace Server.Responses
     public class DecorationResponse
     {
         public string[] decorations;
+        public int cacheTtlSeconds;
     }
 }

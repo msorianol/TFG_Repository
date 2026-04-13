@@ -6,5 +6,6 @@ namespace Server.Responses
     public class ContractResponse
     {
         public string[] inputs;
+        public int cacheTtlSeconds;
     }
 }
