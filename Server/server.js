@@ -1406,9 +1406,9 @@ addGroup();
                                 <input type="hidden" name="itemId" value="${it.itemId}">
                                 <input type="hidden" name="region" value="${r.id}">
                                 <span class="prio-badge" style="color:${color};background:rgba(167,139,250,0.1);border-color:rgba(167,139,250,0.25);">${r.id}</span>
-                                <input type="number" step="0.01" name="price"
-                                       value="${curPrice}" placeholder="—"
-                                       style="width:72px;border-color:${existing ? 'var(--border2)' : 'var(--border)'};">
+                                <input type="text" inputmode="decimal" name="price"
+                                       value="${curPrice}" placeholder="buit=eliminar"
+                                       style="width:90px;border-color:${existing ? 'var(--border2)' : 'var(--border)'};color:${existing ? 'var(--text)' : 'var(--text-3)'}">
                                 <select name="currency" style="min-width:60px;">
                                     <option value="EUR" ${curCurr === 'EUR' ? 'selected' : ''}>EUR</option>
                                     <option value="USD" ${curCurr === 'USD' ? 'selected' : ''}>USD</option>
@@ -1841,28 +1841,51 @@ app.post('/update-cache-config', (req, res) => {
     })).then(() => res.redirect('/dashboard'));
 });
 
-// POST /update-item-price — edita preu d'un item+regió sense esborrar-lo
+// POST /update-item-price
+// Si price és buit o zero: elimina el preu d'aquella regió (l'item desapareix d'allà).
+// Si price té valor: actualitza el preu.
 app.post('/update-item-price', (req, res) => {
     const { itemId, region, price, currency } = req.body;
-    if (!itemId || !region || !price) return res.redirect('/dashboard');
-    const priceVal = parseFloat(price);
-    db.run('INSERT OR REPLACE INTO shop_prices (item_id, region, price, currency) VALUES (?,?,?,?)',
-        [itemId, region, priceVal, currency || 'EUR'], (err) => {
-            if (err) return console.error(err);
-            // Actualitzem també el camp prices dins de l'entry
-            db.get("SELECT seasonal_items FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
-                const list = parseSeasonalItems(row && row.seasonal_items);
-                const entry = list.find(it => it.itemId === itemId);
-                if (entry) {
-                    if (!entry.prices) entry.prices = {};
-                    entry.prices[region] = { price: priceVal, currency: currency || 'EUR' };
-                    if (!entry.activeRegions) entry.activeRegions = [];
-                    if (!entry.activeRegions.includes(region)) entry.activeRegions.push(region);
-                    db.run("UPDATE api_contract SET seasonal_items = ? WHERE endpoint = 'get-price'",
-                        [JSON.stringify(list)], () => res.redirect('/dashboard'));
-                } else { res.redirect('/dashboard'); }
-            });
+    if (!itemId || !region) return res.redirect('/dashboard');
+
+    const isEmpty  = !price || price.trim() === '';
+    const priceVal = isEmpty ? null : parseFloat(price);
+
+    // Funció que actualitza seasonal_items (prices + activeRegions)
+    const updateEntry = (add) => {
+        db.get("SELECT seasonal_items FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
+            const list = parseSeasonalItems(row && row.seasonal_items);
+            const entry = list.find(it => it.itemId === itemId);
+            if (!entry) return res.redirect('/dashboard');
+            if (!entry.prices) entry.prices = {};
+            if (!entry.activeRegions) entry.activeRegions = [];
+            if (add) {
+                entry.prices[region] = { price: priceVal, currency: currency || 'EUR' };
+                if (!entry.activeRegions.includes(region)) entry.activeRegions.push(region);
+            } else {
+                delete entry.prices[region];
+                entry.activeRegions = entry.activeRegions.filter(r => r !== region);
+            }
+            db.run("UPDATE api_contract SET seasonal_items = ? WHERE endpoint = 'get-price'",
+                [JSON.stringify(list)], () => res.redirect('/dashboard'));
         });
+    };
+
+    if (isEmpty) {
+        // Esborrem de shop_prices i de seasonal_items
+        db.run('DELETE FROM shop_prices WHERE item_id = ? AND region = ?',
+            [itemId, region], (err) => {
+                if (err) console.error(err);
+                updateEntry(false);
+            });
+    } else {
+        // Actualitzem shop_prices i seasonal_items
+        db.run('INSERT OR REPLACE INTO shop_prices (item_id, region, price, currency) VALUES (?,?,?,?)',
+            [itemId, region, priceVal, currency || 'EUR'], (err) => {
+                if (err) console.error(err);
+                updateEntry(true);
+            });
+    }
 });
 
 // ------------------------------------
