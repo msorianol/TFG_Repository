@@ -49,7 +49,7 @@ namespace Server
             StartCoroutine(InitRoutine());
         }
 
-        IEnumerator InitRoutine()
+        private IEnumerator InitRoutine()
         {
             yield return StartCoroutine(FetchContract());
             StartCoroutine(PollServerRoutine());
@@ -57,7 +57,7 @@ namespace Server
 
         // Cada 5s comprova si la caché ha caducat.
         // Si no ha caducat, usa les dades locals sense fer cap petició.
-        IEnumerator PollServerRoutine()
+        private IEnumerator PollServerRoutine()
         {
             while (true)
             {
@@ -78,7 +78,7 @@ namespace Server
         }
 
         // CONTRACTE
-        IEnumerator FetchContract()
+        private IEnumerator FetchContract()
         {
             string cached = LiveOpsCache.Load(CACHE_CONTRACT);
             if (cached != null)
@@ -104,7 +104,7 @@ namespace Server
             }
         }
 
-        void ApplyContract(string json)
+        private void ApplyContract(string json)
         {
             ContractResponse contract = JsonUtility.FromJson<ContractResponse>(json);
             if (contract == null || contract.inputs == null) return;
@@ -128,7 +128,7 @@ namespace Server
         }
         
         // VERSION
-        IEnumerator FetchVersion()
+        private IEnumerator FetchVersion()
         {
             using (UnityWebRequest req = UnityWebRequest.Get(_versionUrl))
             {
@@ -152,7 +152,7 @@ namespace Server
         }
 
         // EVENTS
-        IEnumerator FetchEvent()
+        private IEnumerator FetchEvent()
         {
             string cached = LiveOpsCache.Load(CACHE_EVENT);
             if (cached != null)
@@ -179,7 +179,7 @@ namespace Server
             }
         }
 
-        void ApplyEvent(string json)
+        private void ApplyEvent(string json)
         {
             EventResponse r = JsonUtility.FromJson<EventResponse>(json);
             if (r == null || r.name == _lastEventName) return;
@@ -189,7 +189,7 @@ namespace Server
         }
 
         // BOTIGA
-        IEnumerator FetchShop()
+        private IEnumerator FetchShop()
         {
             string cached = LiveOpsCache.Load(CACHE_SHOP);
             if (cached != null)
@@ -215,7 +215,7 @@ namespace Server
             }
         }
 
-        void ApplyShop(string json)
+        private void ApplyShop(string json)
         {
             ShopResponse r = JsonUtility.FromJson<ShopResponse>(json);
             if (r == null) return;
@@ -224,7 +224,7 @@ namespace Server
         }
 
         // DECORACIONS
-        IEnumerator FetchDecorations()
+        private IEnumerator FetchDecorations()
         {
             string cached = LiveOpsCache.Load(CACHE_DECORATIONS);
             if (cached != null)
@@ -250,7 +250,7 @@ namespace Server
             }
         }
 
-        void ApplyDecorations(string json)
+        private void ApplyDecorations(string json)
         {
             DecorationResponse r = JsonUtility.FromJson<DecorationResponse>(json);
             if (r == null) return;
@@ -258,7 +258,7 @@ namespace Server
         }
 
         // PREUS
-        IEnumerator FetchPrice(string itemId)
+        private IEnumerator FetchPrice(string itemId)
         {
             string cacheKey = "price_" + itemId;
             string cached = LiveOpsCache.Load(cacheKey);
@@ -300,7 +300,7 @@ namespace Server
             }
         }
 
-        void ApplyPrice(string itemId, string json)
+        private void ApplyPrice(string itemId, string json)
         {
             PriceResponse r = JsonUtility.FromJson<PriceResponse>(json);
             if (r == null) return;

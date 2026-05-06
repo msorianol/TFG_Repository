@@ -15,8 +15,8 @@ namespace Server
         [Serializable]
         private class CacheEntry
         {
-            public string  data;         // JSON serialitzat de la resposta
-            public string  expiresAt;    // ISO 8601: quan caduca
+            public string data; // JSON serialitzat de la resposta
+            public string expiresAt; // ISO 8601: quan caduca
         }
 
         // ── API pública ───────────────────────────────────────────────────
@@ -28,9 +28,9 @@ namespace Server
         {
             var entry = new CacheEntry
             {
-                data      = jsonData,
+                data = jsonData,
                 expiresAt = DateTime.UtcNow.AddSeconds(ttlSeconds)
-                                           .ToString("o")   // ISO 8601
+                    .ToString("o") // ISO 8601
             };
             string path = GetPath(key);
             File.WriteAllText(path, JsonUtility.ToJson(entry));
@@ -48,11 +48,11 @@ namespace Server
 
             try
             {
-                string      raw   = File.ReadAllText(path);
-                CacheEntry  entry = JsonUtility.FromJson<CacheEntry>(raw);
-                DateTime    exp   = DateTime.Parse(entry.expiresAt,
-                                        null,
-                                        System.Globalization.DateTimeStyles.RoundtripKind);
+                string raw = File.ReadAllText(path);
+                CacheEntry entry = JsonUtility.FromJson<CacheEntry>(raw);
+                DateTime exp = DateTime.Parse(entry.expiresAt,
+                    null,
+                    System.Globalization.DateTimeStyles.RoundtripKind);
 
                 if (DateTime.UtcNow < exp)
                 {

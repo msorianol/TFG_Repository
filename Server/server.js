@@ -134,11 +134,18 @@ function getRegionForReq(req, cb) {
     });
 }
 
-function isActiveNow(entry, region, now) {
+function isActiveNow(entry, region, now, playerData = {}) {
     if (entry.activeRegions && entry.activeRegions.length > 0) {
         if (!entry.activeRegions.includes(region)) return false;
     } else if (entry.country && entry.country !== region) {
         return false;
+    }
+
+    if (entry.conditions && entry.conditions.length > 0) {
+        const conditionsMatch = entry.conditions.some(group =>
+            group.every(cond => evalCondition(cond, playerData))
+        );
+        if (!conditionsMatch) return false;
     }
 
     if (entry.fixed) return true;
@@ -154,6 +161,7 @@ function isActiveNow(entry, region, now) {
 // MOTOR DE REGLES — FND + prioritat
 // ------------------------------------
 function evalCondition({ field, operator, value }, data) {
+    if (!data) return false;
     const rawVal = data[field];
     if (rawVal === undefined || rawVal === null || rawVal === "") return false;
     const isNumeric = !isNaN(rawVal) && !isNaN(value);
@@ -254,12 +262,13 @@ app.get('/api/get-shop', (req, res) => {
 });
 
 // GET /api/get-decorations
-app.get('/api/get-decorations', (req, res) => {
+app.post('/api/get-decorations', (req, res) => {
     db.get("SELECT decorations FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
         if (err) return res.status(500).json({ error: err.message });
         const all = parseDecorations(row && row.decorations);
         getRegionForReq(req, (region) => {
-            const active = all.filter(dc => isActiveNow(dc, region, new Date())).map(dc => dc.decorationId);
+            const playerData = req.body;
+            const active = all.filter(dc => isActiveNow(dc, region, new Date(), playerData)).map(dc => dc.decorationId);
             getTtl('get-decorations', (ttl) => {
                 res.json({ decorations: active, cacheTtlSeconds: ttl });
             });
@@ -398,9 +407,10 @@ app.get('/dashboard', (req, res) => {
                 }).join('');
             }
 
-            function renderDateList(entries, delUrl, badge) {
+            function renderDateList(entries, delUrl, badge, globalList) {
                 if (entries.length === 0) return '<p class="empty">Cap entrada definida.</p>';
                 return entries.map((entry, i) => {
+                    const realIndex = globalList ? globalList.indexOf(entry) : i;
                     let dateHtml = '';
 
                     if (!entry.fixed) {
@@ -409,7 +419,7 @@ app.get('/dashboard', (req, res) => {
                             : String(entry.startDay).padStart(2, '0') + '/' + String(entry.startMonth).padStart(2, '0')
                             + ' → ' + String(entry.endDay).padStart(2, '0') + '/' + String(entry.endMonth).padStart(2, '0');
                         const co = (entry.activeRegions && entry.activeRegions.length > 0) ? entry.activeRegions.join(', ') : (entry.country || 'Tots');
-                        
+
                         dateHtml = '<span class="arrow">·</span><code>' + d + '</code>'
                             + '<span class="arrow">·</span><span style="color:var(--text-2);font-size:12px;">' + co + '</span>';
                     }
@@ -418,7 +428,7 @@ app.get('/dashboard', (req, res) => {
                         + '<span class="rule-body">' + badge(entry)
                         + dateHtml
                         + '</span>'
-                        + '<a href="' + delUrl + '?index=' + i + '" onclick="return confirm(\'Eliminar?\')" class="del-btn">×</a>'
+                        + '<a href="' + delUrl + '?index=' + realIndex + '" onclick="return confirm(\'Eliminar?\')" class="del-btn">×</a>'
                         + '</div>';
                 }).join('');
             }
@@ -426,17 +436,36 @@ app.get('/dashboard', (req, res) => {
                 e => '<strong style="color:#e2e4e9;">' + e.name + '</strong><span class="prio-badge" style="color:#60a5fa;background:rgba(96,165,250,0.1);border-color:rgba(96,165,250,0.3);">' + Math.round(e.discount * 100) + '%</span>');
             const renderSeasonalItems = items => renderDateList(items, '/delete-items',
                 it => {
-                    const badges = it.prices
+                    const priceBadges = it.prices
                         ? Object.entries(it.prices).map(([rid, p]) =>
                             '<span class="prio-badge" style="color:#a78bfa;background:rgba(167,139,250,0.1);border-color:rgba(167,139,250,0.3);">'
                             + rid + ': ' + p.price + ' ' + p.currency + '</span>').join('')
                         : '';
-                    return '<code style="color:#a78bfa;">' + it.itemId + '</code>'
+                    const fixedBadge = it.fixed
+                        ? '<span class="prio-badge" style="color:#34d399;background:rgba(52,211,153,0.1);border-color:rgba(52,211,153,0.3);">FIXE</span>'
+                        : '';
+                    const condBadges = (it.conditions && it.conditions[0])
+                        ? it.conditions[0].map(c =>
+                            '<span class="prio-badge" style="color:#f87171;background:rgba(248,113,113,0.08);border-color:rgba(248,113,113,0.25);">'
+                            + c.field + ' ' + c.operator + ' ' + c.value + '</span>').join('')
+                        : '';
+                    return fixedBadge
+                        + '<code style="color:#a78bfa;">' + it.itemId + '</code>'
                         + '<span style="color:var(--text-2);font-size:12px;">' + it.name + '</span>'
-                        + badges;
-                });
+                        + condBadges
+                        + priceBadges;
+                }, seasonalItems);
             const renderDecorations = decs => renderDateList(decs, '/delete-decoration',
-                dc => '<code style="color:#34d399;">' + dc.decorationId + '</code><span style="color:var(--text-2);font-size:12px;">' + dc.name + '</span>');
+                dc => {
+                    const condBadges = (dc.conditions && dc.conditions[0])
+                        ? dc.conditions[0].map(c =>
+                            '<span class="prio-badge" style="margin-left:8px; color:#f87171;background:rgba(248,113,113,0.08);border-color:rgba(248,113,113,0.25);">'
+                            + c.field + ' ' + c.operator + ' ' + c.value + '</span>').join('')
+                        : '';
+                    return '<code style="color:#34d399;">' + dc.decorationId + '</code>'
+                        + '<span style="color:var(--text-2);font-size:12px;">' + dc.name + '</span>'
+                        + condBadges;
+                });
 
             const fieldOptions = inputs.map(f =>
                 `<option value="${f.name}">${f.name}${f.active ? '' : ' (inactiu)'}</option>`
@@ -1375,11 +1404,47 @@ addGroup();
                     <span class="add-label">/</span>
                     <input type="number" name="month" min="1" max="12" placeholder="MM" style="width:52px;">
                 </div>
+                <!-- Condicions de jugador -->
+                <div style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+                    <span class="add-label" style="color:var(--text-2);">Condicions del jugador</span>
+                    <span class="prio-badge" style="color:var(--text-3);border-color:var(--border);">opcional · AND</span>
+                    <button type="button" onclick="addDecCond()"
+                            style="padding:4px 10px;font-size:11px;background:var(--surface);border:1px dashed var(--border2);color:var(--text-2);border-radius:4px;cursor:pointer;">
+                        + Condició
+                    </button>
+                </div>
+                <div id="dec-conds-list"></div>
+                <p style="font-size:11px;color:var(--text-3);margin-top:4px;">Totes les condicions s'han de complir (AND). Deixa buit = apareix sempre.</p>
                 <div class="add-row" style="margin-top:6px;gap:8px;align-items:center;">
                     <button type="submit" class="btn-add" style="margin-left:auto;">Afegir decoració</button>
                 </div>
                 <p style="font-size:11px;color:var(--text-3);margin-top:8px;">Ex: ID <b>estelada</b> · dia 11/09 · CAT &nbsp;·&nbsp; ID <b>neu</b> · rang 25/12→07/01 · Tots</p>
             </form>
+            <script>
+            var _dc = 0;
+            function addDecCond() {
+                var i = _dc++;
+                var row = document.createElement('div');
+                row.className = 'add-row';
+                row.style.cssText = 'margin-top:4px;flex-wrap:wrap;gap:6px;align-items:center;';
+                row.id = 'dc-' + i;
+                row.innerHTML =
+                    '<select name="dec_cond_field_'+i+'" style="min-width:110px;">'
+                    + '<option value="playerLevel">playerLevel</option>'
+                    + '<option value="playerXP">playerXP</option>'
+                    + '<option value="playerClass">playerClass</option>'
+                    + '<option value="daysPlayed">daysPlayed</option>'
+                    + '</select>'
+                    + '<select name="dec_cond_op_'+i+'">'
+                    + '<option value=">=">&gt;=</option><option value="<=">&lt;=</option>'
+                    + '<option value=">">&gt;</option><option value="<">&lt;</option>'
+                    + '<option value="==">==</option><option value="!=">!=</option>'
+                    + '</select>'
+                    + '<input type="text" name="dec_cond_val_'+i+'" placeholder="ex: 10 o warrior" style="width:90px;">'
+                    + '<button type="button" onclick="this.parentElement.remove()" class="del-btn">×</button>';
+                document.getElementById('dec-conds-list').appendChild(row);
+            }
+            </script>
         </div>
     </div>
     <!-- ══ PREUS BASE ══ -->
@@ -1674,6 +1739,7 @@ app.post('/add-event-discount', (req, res) => {
     });
 });
 
+
 // GET /delete-event-discount
 app.get('/delete-event-discount', (req, res) => {
     const index = parseInt(req.query.index);
@@ -1764,6 +1830,16 @@ app.get('/fix-db', (req, res) => {
     });
 });
 
+app.get('/nuke-items', (req, res) => {
+    // 1. Buidem la llista JSON de la taula api_contract
+    db.run("UPDATE api_contract SET seasonal_items = '[]' WHERE endpoint = 'get-price'", () => {
+        // 2. Buidem tots els preus de la taula shop_prices
+        db.run("DELETE FROM shop_prices", () => {
+            res.send("<h1>Ítems i preus eliminats!</h1><p>Torna al <a href='/dashboard'>Dashboard</a>.</p>");
+        });
+    });
+});
+
 // POST /add-decoration
 app.post('/add-decoration', (req, res) => {
     const b = req.body;
@@ -1774,6 +1850,23 @@ app.post('/add-decoration', (req, res) => {
         entry.startDay = parseInt(b.startDay); entry.startMonth = parseInt(b.startMonth);
         entry.endDay = parseInt(b.endDay); entry.endMonth = parseInt(b.endMonth);
     }
+
+    const conditions = [];
+    Object.keys(b).forEach(key => {
+        if (key.startsWith('dec_cond_field_')) {
+            const idx = key.split('_').pop();
+            const f = b[key];
+            const op = b['dec_cond_op_' + idx];
+            const v = (b['dec_cond_val_' + idx] || '').trim();
+
+            if (f && op && v) {
+                conditions.push({ field: f, operator: op, value: v });
+            }
+        }
+    });
+
+    if (conditions.length > 0) entry.conditions = [conditions];
+
     db.get("SELECT decorations FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
         const list = parseDecorations(row && row.decorations);
         list.push(entry);
@@ -1848,7 +1941,7 @@ app.post('/update-item-price', (req, res) => {
     const { itemId, region, price, currency } = req.body;
     if (!itemId || !region) return res.redirect('/dashboard');
 
-    const isEmpty  = !price || price.trim() === '';
+    const isEmpty = !price || price.trim() === '';
     const priceVal = isEmpty ? null : parseFloat(price);
 
     // Funció que actualitza seasonal_items (prices + activeRegions)
