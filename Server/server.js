@@ -10,7 +10,7 @@ app.use(bodyParser.urlencoded({ extended: true }));
 const db = new sqlite3.Database("./game_data.db");
 
 let debugSimulatedIp = "84.88.1.1";
-let globalDataVersion = Date.now();
+let globalDataVersion = 0;  // S'inicialitza des de la DB a l'arrencada
 
 // ------------------------------------
 // INIT DB: Creació i migració de taules
@@ -30,8 +30,7 @@ db.serialize(() => {
     db.run(`CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY,
         name TEXT,
-        message TEXT,
-        color TEXT
+        message TEXT
     )`);
 
     db.run(`CREATE TABLE IF NOT EXISTS shop_prices (
@@ -55,14 +54,24 @@ db.serialize(() => {
         ttl_seconds INTEGER DEFAULT 300
     )`);
 
+    db.run(`CREATE TABLE IF NOT EXISTS server_config (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )`);
+    db.run(`INSERT OR IGNORE INTO server_config (key, value) VALUES ('data_version', '1')`);
+    // Carreguem la versió persistent des de la DB
+    db.get("SELECT value FROM server_config WHERE key = 'data_version'", (err, row) => {
+        globalDataVersion = row ? parseInt(row.value) : Date.now();
+    });
+
     // 2. Inserim la configuració base per defecte perquè el Dashboard no falli
     db.run(`INSERT OR IGNORE INTO api_contract (endpoint, inputs, outputs)
             VALUES ('get-price', 
             '[{"name":"itemId","active":true}]', 
             '[{"name":"price","active":true}, {"name":"currency","active":true}]')`);
 
-    db.run(`INSERT OR IGNORE INTO events (id, name, message, color)
-            VALUES (1, 'normal', 'Benvingut', '#FFFFFF')`);
+    db.run(`INSERT OR IGNORE INTO events (id, name, message)
+            VALUES (1, 'normal', 'Benvingut')`);
 
     // 3. Migracions (per si la base de dades ja existia en una versió antiga)
     const addColumn = (col) => {
@@ -82,10 +91,15 @@ db.serialize(() => {
 // Retrocompatible amb l'antic format (array de strings).
 function parseFields(raw) {
     if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return parsed.map(item =>
-        typeof item === "string" ? { name: item, active: true } : item
-    );
+    try {
+        const parsed = JSON.parse(raw);
+        return parsed.map(item =>
+            typeof item === "string" ? { name: item, active: true } : item
+        );
+    } catch (e) {
+        console.error('parseFields: JSON invàlid', e.message);
+        return [];
+    }
 }
 
 // Retorna només els noms dels camps actius
@@ -220,7 +234,9 @@ app.get('/api/version', (req, res) => {
 
 // POST /force-refresh
 app.post('/force-refresh', (req, res) => {
-    globalDataVersion = Date.now(); // Actualitzem la versió a l'instant actual
+    globalDataVersion = Date.now();
+    db.run("INSERT OR REPLACE INTO server_config (key, value) VALUES ('data_version', ?)",
+        [String(globalDataVersion)]);
     console.log("🚨 S'ha forçat l'actualització de la caché de tots els clients!");
     res.redirect('/dashboard');
 });
@@ -253,7 +269,8 @@ app.get('/api/get-shop', (req, res) => {
         if (err) return res.status(500).json({ error: err.message });
         const all = parseSeasonalItems(row && row.seasonal_items);
         getRegionForReq(req, (region) => {
-            const active = all.filter(it => isActiveNow(it, region, new Date())).map(it => it.itemId);
+            const playerData = req.query;
+            const active = all.filter(it => isActiveNow(it, region, new Date(), playerData)).map(it => it.itemId);
             getTtl('get-shop', (ttl) => {
                 res.json({ items: active, cacheTtlSeconds: ttl });
             });
@@ -262,12 +279,12 @@ app.get('/api/get-shop', (req, res) => {
 });
 
 // GET /api/get-decorations
-app.post('/api/get-decorations', (req, res) => {
+app.get('/api/get-decorations', (req, res) => {
     db.get("SELECT decorations FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
         if (err) return res.status(500).json({ error: err.message });
         const all = parseDecorations(row && row.decorations);
         getRegionForReq(req, (region) => {
-            const playerData = req.body;
+            const playerData = req.query;
             const active = all.filter(dc => isActiveNow(dc, region, new Date(), playerData)).map(dc => dc.decorationId);
             getTtl('get-decorations', (ttl) => {
                 res.json({ decorations: active, cacheTtlSeconds: ttl });
@@ -345,8 +362,8 @@ app.post('/api/get-price', (req, res) => {
 // ------------------------------------
 
 app.get('/dashboard', (req, res) => {
-    db.get("SELECT * FROM api_contract WHERE endpoint = 'get-price'", (err, contract) => {
-        db.get("SELECT name FROM events WHERE id = 1", (err, currentEvent) => {
+    db.get("SELECT * FROM api_contract WHERE endpoint = 'get-price'", (errContract, contract) => {
+        db.get("SELECT name FROM events WHERE id = 1", (errEvent, currentEvent) => {
 
             const inputs = parseFields(contract && contract.inputs) || [{ name: "itemId", active: true }];
             const outputs = parseFields(contract && contract.outputs) || [{ name: "price", active: true }];
@@ -509,7 +526,7 @@ function conditionHtml(gi, ci) {
     if (ci > 0) {
         var andSp = document.createElement('span');
         andSp.style.cssText = 'font-size:11px;font-weight:700;color:#f87171;font-family:monospace;min-width:14px;';
-        andSp.textContent = '\\u2227';
+        andSp.textContent = '∧';
         row.appendChild(andSp);
     } else {
         var sp = document.createElement('span'); sp.style.minWidth='14px'; row.appendChild(sp);
@@ -519,7 +536,7 @@ function conditionHtml(gi, ci) {
     row.appendChild(makeInput ('g'+gi+'_val'+ci));
     if (ci > 0) {
         var del = document.createElement('button');
-        del.type = 'button'; del.className = 'del-btn'; del.textContent = '\\u00d7';
+        del.type = 'button'; del.className = 'del-btn'; del.textContent = '×';
         del.setAttribute('onclick', 'removeCond('+gi+','+ci+')');
         row.appendChild(del);
     }
@@ -535,7 +552,7 @@ function addGroup() {
     if (gi > 0) {
         var orLbl = document.createElement('span');
         orLbl.style.cssText = 'display:block;font-size:11px;font-weight:700;color:#f87171;font-family:monospace;margin-bottom:6px;';
-        orLbl.textContent = '\\u2228 OR';
+        orLbl.textContent = '∨ OR';
         div.appendChild(orLbl);
     }
     var condsDiv = document.createElement('div');
@@ -545,13 +562,13 @@ function addGroup() {
     var actionsDiv = document.createElement('div');
     actionsDiv.style.cssText = 'display:flex;gap:8px;margin-top:6px;';
     var addBtn = document.createElement('button');
-    addBtn.type = 'button'; addBtn.textContent = '\\u2227 Afegir condici\\u00f3 AND';
+    addBtn.type = 'button'; addBtn.textContent = '∧ Afegir condició AND';
     addBtn.style.cssText = 'padding:5px 10px;font-size:11px;background:var(--bg);border:1px dashed var(--border2);color:var(--text-2);border-radius:4px;cursor:pointer;';
     addBtn.setAttribute('onclick', 'addCond('+gi+')');
     actionsDiv.appendChild(addBtn);
     if (gi > 0) {
         var rmBtn = document.createElement('button');
-        rmBtn.type = 'button'; rmBtn.className = 'del-btn'; rmBtn.textContent = '\\u00d7';
+        rmBtn.type = 'button'; rmBtn.className = 'del-btn'; rmBtn.textContent = '×';
         rmBtn.style.marginLeft = 'auto';
         rmBtn.setAttribute('onclick', 'removeGroup('+gi+')');
         actionsDiv.appendChild(rmBtn);
@@ -1702,13 +1719,18 @@ app.get('/delete-rule', (req, res) => {
 // POST /update-event
 app.post('/update-event', (req, res) => {
     const eventName = req.body.eventName;
-    let message = "Benvingut", color = "#FFFFFF";
-    if (eventName === "christmas") { message = "Bon Nadal!"; color = "#FF0000"; }
-    if (eventName === "sant_jordi") { message = "Feliç Diada!"; color = "#FFD700"; }
+    let message = "Benvingut";
+    if (eventName === "christmas") { message = "Bon Nadal!"; }
+    if (eventName === "sant_jordi") { message = "Feliç Diada!"; }
     db.run(
-        "UPDATE events SET name = ?, message = ?, color = ? WHERE id = 1",
-        [eventName, message, color],
-        () => res.redirect('/dashboard')
+        "UPDATE events SET name = ?, message = ? WHERE id = 1",
+        [eventName, message],
+        () => {
+            globalDataVersion = Date.now();
+            db.run("INSERT OR REPLACE INTO server_config (key, value) VALUES ('data_version', ?)",
+                [String(globalDataVersion)]);
+            res.redirect('/dashboard');
+        }
     );
 });
 
@@ -1815,8 +1837,9 @@ app.get('/delete-items', (req, res) => {
     });
 });
 
-// GET /fix-db (Botó d'emergència per arreglar la taula)
+// GET /fix-db — NOMÉS per a entorns de desenvolupament local
 app.get('/fix-db', (req, res) => {
+    if (process.env.NODE_ENV === 'production') return res.status(403).send('Forbidden');
     db.run('DROP TABLE IF EXISTS shop_prices', () => {
         db.run(`CREATE TABLE shop_prices (
             item_id TEXT,
@@ -1831,6 +1854,7 @@ app.get('/fix-db', (req, res) => {
 });
 
 app.get('/nuke-items', (req, res) => {
+    if (process.env.NODE_ENV === 'production') return res.status(403).send('Forbidden');
     // 1. Buidem la llista JSON de la taula api_contract
     db.run("UPDATE api_contract SET seasonal_items = '[]' WHERE endpoint = 'get-price'", () => {
         // 2. Buidem tots els preus de la taula shop_prices
