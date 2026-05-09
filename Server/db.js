@@ -66,7 +66,7 @@ db.serialize(() => {
 
     // ── Migracions ──
     const addColumn = (col) => {
-        db.run(`ALTER TABLE api_contract ADD COLUMN ${col} TEXT DEFAULT '[]'`, () => {});
+        db.run(`ALTER TABLE api_contract ADD COLUMN ${col} TEXT DEFAULT '[]'`, () => { });
     };
     addColumn('rules');
     addColumn('event_discounts');

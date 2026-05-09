@@ -1,7 +1,7 @@
 const express = require('express');
-const router  = express.Router();
-const geoip   = require('geoip-lite');
-const { db }  = require('../db');
+const router = express.Router();
+const geoip = require('geoip-lite');
+const { db } = require('../db');
 const { parseFields, parseRules, parseEventDiscounts, parseSeasonalItems, parseDecorations, parseJSON } = require('../helpers');
 const { getDebugIp, detectRegion } = require('../geo');
 
@@ -9,12 +9,12 @@ router.get('/dashboard', (req, res) => {
     db.get("SELECT * FROM api_contract WHERE endpoint = 'get-price'", (errContract, contract) => {
         db.get("SELECT name FROM events WHERE id = 1", (errEvent, currentEvent) => {
 
-            const inputs         = parseFields(contract && contract.inputs)  || [{ name: "itemId", active: true }];
-            const outputs        = parseFields(contract && contract.outputs) || [{ name: "price",  active: true }];
-            const rules          = parseRules(contract && contract.rules);
+            const inputs = parseFields(contract && contract.inputs) || [{ name: "itemId", active: true }];
+            const outputs = parseFields(contract && contract.outputs) || [{ name: "price", active: true }];
+            const rules = parseRules(contract && contract.rules);
             const eventDiscounts = parseEventDiscounts(contract && contract.event_discounts);
-            const seasonalItems  = parseSeasonalItems(contract && contract.seasonal_items);
-            const decorations    = parseDecorations(contract && contract.decorations);
+            const seasonalItems = parseSeasonalItems(contract && contract.seasonal_items);
+            const decorations = parseDecorations(contract && contract.decorations);
             const activeEventName = currentEvent ? currentEvent.name.toUpperCase() : "UNKNOWN";
 
             // ── Helpers de renderització ──
@@ -123,13 +123,13 @@ router.get('/dashboard', (req, res) => {
                 `<option value="${f.name}">${f.name}${f.active ? '' : ' (inactiu)'}</option>`
             ).join('');
 
-            const inputRows      = renderFieldRows(inputs, 'in');
-            const outputRows     = renderFieldRows(outputs, 'out');
-            const ruleRows       = renderRules(rules);
-            const eventDiscRows  = renderEventDiscounts(eventDiscounts);
-            const fixedItems     = seasonalItems.filter(it => it.fixed);
-            const seasonalOnly   = seasonalItems.filter(it => !it.fixed);
-            const fixedItemRows  = renderSeasonalItems(fixedItems);
+            const inputRows = renderFieldRows(inputs, 'in');
+            const outputRows = renderFieldRows(outputs, 'out');
+            const ruleRows = renderRules(rules);
+            const eventDiscRows = renderEventDiscounts(eventDiscounts);
+            const fixedItems = seasonalItems.filter(it => it.fixed);
+            const seasonalOnly = seasonalItems.filter(it => !it.fixed);
+            const fixedItemRows = renderSeasonalItems(fixedItems);
             const seasonalItemRows = renderSeasonalItems(seasonalOnly);
             const decorationRows = renderDecorations(decorations);
 
@@ -210,7 +210,7 @@ addGroup();
             }
 
             const safeFieldOptions = fieldOptions || '<option value="">— afegeix inputs —</option>';
-            const safeOpOptions    = '<option value=">=">&gt;=</option>'
+            const safeOpOptions = '<option value=">=">&gt;=</option>'
                 + '<option value="<=">&lt;=</option>'
                 + '<option value=">">&gt;</option>'
                 + '<option value="<">&lt;</option>'
@@ -220,8 +220,8 @@ addGroup();
 
             db.all('SELECT * FROM regions ORDER BY is_default ASC, name ASC', (err, regions) => {
                 regions = regions || [];
-                const debugIp   = getDebugIp();
-                const geoSim    = geoip.lookup(debugIp);
+                const debugIp = getDebugIp();
+                const geoSim = geoip.lookup(debugIp);
                 const regionSim = detectRegion(geoSim, regions);
                 const regionOptions = '<option value="">Totes les regions</option>'
                     + regions.map(r => `<option value="${r.id}">${r.name} (${r.id})</option>`).join('');
@@ -396,23 +396,23 @@ addGroup();
             <div class="section-body">
                 <form action="/update-cache-config" method="POST">
                     ${(() => {
-                        const endpointsList = ['get-event', 'get-shop', 'get-decorations', 'get-price', 'get-contract'];
-                        const labels = {
-                            'get-event': "Estat de l'Esdeveniment", 'get-shop': 'Items de la Botiga',
-                            'get-decorations': "Decoracions d'Escena", 'get-price': 'Preus', 'get-contract': 'Contracte API',
-                        };
-                        return endpointsList.map(ep => {
-                            const row = cacheRows.find(r => r.endpoint === ep);
-                            const ttl = row ? row.ttl_seconds : 300;
-                            const display = ttl >= 3600 ? Math.floor(ttl / 3600) + 'h' : Math.floor(ttl / 60) + 'min';
-                            return `<div class="field-row" style="margin-bottom:6px;">
+                                const endpointsList = ['get-event', 'get-shop', 'get-decorations', 'get-price', 'get-contract'];
+                                const labels = {
+                                    'get-event': "Estat de l'Esdeveniment", 'get-shop': 'Items de la Botiga',
+                                    'get-decorations': "Decoracions d'Escena", 'get-price': 'Preus', 'get-contract': 'Contracte API',
+                                };
+                                return endpointsList.map(ep => {
+                                    const row = cacheRows.find(r => r.endpoint === ep);
+                                    const ttl = row ? row.ttl_seconds : 300;
+                                    const display = ttl >= 3600 ? Math.floor(ttl / 3600) + 'h' : Math.floor(ttl / 60) + 'min';
+                                    return `<div class="field-row" style="margin-bottom:6px;">
                                 <span class="field-name" style="min-width:200px;">${labels[ep]}</span>
                                 <span class="prio-badge" style="color:#60a5fa;background:rgba(96,165,250,0.1);border-color:rgba(96,165,250,0.3);">${display}</span>
                                 <input type="number" name="ttl_${ep}" value="${ttl}" min="10" style="width:80px;">
                                 <span class="add-label">s</span>
                             </div>`;
-                        }).join('');
-                    })()}
+                                }).join('');
+                            })()}
                     <div style="margin-top:12px;">
                         <button type="submit" class="btn-save" style="width:auto;padding:9px 24px;font-size:12px;">Guardar TTL</button>
                     </div>
@@ -730,16 +730,16 @@ addGroup();
             </div>
             <div class="section-body">
                 ${(() => {
-                    const allItems = seasonalItems;
-                    if (!allItems.length) return '<p class="empty">Cap item definit. Afegeix items a la secció Gestió d\'Items.</p>';
-                    const renderGroup = (items, label, color) => {
-                        if (!items.length) return '';
-                        const rows = items.map(it => {
-                            const regionRows = regions.map(r => {
-                                const existing = it.prices && it.prices[r.id];
-                                const curPrice = existing ? existing.price : '';
-                                const curCurr  = existing ? existing.currency : r.currency;
-                                return `<form action="/update-item-price" method="POST"
+                                const allItems = seasonalItems;
+                                if (!allItems.length) return '<p class="empty">Cap item definit. Afegeix items a la secció Gestió d\'Items.</p>';
+                                const renderGroup = (items, label, color) => {
+                                    if (!items.length) return '';
+                                    const rows = items.map(it => {
+                                        const regionRows = regions.map(r => {
+                                            const existing = it.prices && it.prices[r.id];
+                                            const curPrice = existing ? existing.price : '';
+                                            const curCurr = existing ? existing.currency : r.currency;
+                                            return `<form action="/update-item-price" method="POST"
                                      style="display:inline-flex;align-items:center;gap:6px;margin-right:8px;margin-bottom:4px;">
                                     <input type="hidden" name="itemId" value="${it.itemId}">
                                     <input type="hidden" name="region" value="${r.id}">
@@ -754,8 +754,8 @@ addGroup();
                                     </select>
                                     <button type="submit" class="btn-add" style="padding:5px 10px;font-size:11px;">✓</button>
                                 </form>`;
-                            }).join('');
-                            return `<div class="rule-row" style="flex-direction:column;align-items:flex-start;gap:8px;margin-bottom:8px;">
+                                        }).join('');
+                                        return `<div class="rule-row" style="flex-direction:column;align-items:flex-start;gap:8px;margin-bottom:8px;">
                                 <div style="display:flex;align-items:center;gap:8px;width:100%;">
                                     <code style="color:${color};font-size:13px;">${it.itemId}</code>
                                     <span style="color:var(--text-2);font-size:12px;">${it.name}</span>
@@ -764,12 +764,12 @@ addGroup();
                                 </div>
                                 <div style="display:flex;flex-wrap:wrap;gap:4px;">${regionRows}</div>
                             </div>`;
-                        }).join('');
-                        return `<div class="sub-label">${label}</div>${rows}`;
-                    };
-                    return renderGroup(fixedItems, 'Items Fixos', '#34d399')
-                         + renderGroup(seasonalOnly, 'Items de Temporada', '#a78bfa');
-                })()}
+                                    }).join('');
+                                    return `<div class="sub-label">${label}</div>${rows}`;
+                                };
+                                return renderGroup(fixedItems, 'Items Fixos', '#34d399')
+                                    + renderGroup(seasonalOnly, 'Items de Temporada', '#a78bfa');
+                            })()}
             </div>
         </div>
     </div>

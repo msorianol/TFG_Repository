@@ -1,5 +1,5 @@
 const express = require('express');
-const router  = express.Router();
+const router = express.Router();
 const { db, getDataVersion, setDataVersion } = require('../db');
 const { parseFields, activeNames, parseRules, parseEventDiscounts, parseSeasonalItems, parseDecorations, getTtl } = require('../helpers');
 const { getRegionForReq, isActiveNow } = require('../geo');
@@ -70,9 +70,9 @@ router.get('/get-decorations', (req, res) => {
 // Calcula el preu final aplicant geolocalització i les regles actives.
 router.post('/get-price', (req, res) => {
     db.get("SELECT * FROM api_contract WHERE endpoint = 'get-price'", (err, contract) => {
-        const allowedInputs  = activeNames(parseFields(contract && contract.inputs));
+        const allowedInputs = activeNames(parseFields(contract && contract.inputs));
         const allowedOutputs = activeNames(parseFields(contract && contract.outputs));
-        const rules          = parseRules(contract && contract.rules);
+        const rules = parseRules(contract && contract.rules);
         const eventDiscounts = parseEventDiscounts(contract && contract.event_discounts);
 
         let receivedData = {};
@@ -86,7 +86,7 @@ router.post('/get-price', (req, res) => {
         const applyAndRespond = (row, discount) => {
             let response = {};
             allowedOutputs.forEach(field => {
-                if (field === 'price')    response.price    = parseFloat((row.price * (1 - discount)).toFixed(2));
+                if (field === 'price') response.price = parseFloat((row.price * (1 - discount)).toFixed(2));
                 else if (field === 'currency') response.currency = row.currency;
                 else response[field] = row[field] !== undefined ? row[field] : 0;
             });

@@ -1,5 +1,5 @@
 const express = require('express');
-const router  = express.Router();
+const router = express.Router();
 const { db, getDataVersion, setDataVersion } = require('../db');
 const { parseFields, activeNames, parseRules, parseEventDiscounts, parseSeasonalItems, parseDecorations } = require('../helpers');
 
@@ -15,15 +15,15 @@ router.post('/force-refresh', (req, res) => {
 // POST /update-contract
 router.post('/update-contract', (req, res) => {
     db.get("SELECT * FROM api_contract WHERE endpoint = 'get-price'", (err, contract) => {
-        let allInputs  = parseFields(contract && contract.inputs);
+        let allInputs = parseFields(contract && contract.inputs);
         let allOutputs = parseFields(contract && contract.outputs);
 
-        allInputs  = allInputs.map(f  => ({ ...f,  active: req.body[`active_in_${f.name}`]  === "on" }));
-        allOutputs = allOutputs.map(f => ({ ...f,  active: req.body[`active_out_${f.name}`] === "on" }));
+        allInputs = allInputs.map(f => ({ ...f, active: req.body[`active_in_${f.name}`] === "on" }));
+        allOutputs = allOutputs.map(f => ({ ...f, active: req.body[`active_out_${f.name}`] === "on" }));
 
-        const newInput  = (req.body.new_input_name  || "").trim();
+        const newInput = (req.body.new_input_name || "").trim();
         const newOutput = (req.body.new_output_name || "").trim();
-        if (newInput  && !allInputs.find(f  => f.name === newInput))  allInputs.push({ name: newInput,  active: true });
+        if (newInput && !allInputs.find(f => f.name === newInput)) allInputs.push({ name: newInput, active: true });
         if (newOutput && !allOutputs.find(f => f.name === newOutput)) allOutputs.push({ name: newOutput, active: true });
 
         db.run(
@@ -42,9 +42,9 @@ router.post('/update-contract', (req, res) => {
 router.get('/delete-field', (req, res) => {
     const { fieldName, fieldType } = req.query;
     db.get("SELECT * FROM api_contract WHERE endpoint = 'get-price'", (err, contract) => {
-        let allInputs  = parseFields(contract && contract.inputs);
+        let allInputs = parseFields(contract && contract.inputs);
         let allOutputs = parseFields(contract && contract.outputs);
-        if (fieldType === "in")  allInputs  = allInputs.filter(f  => f.name !== fieldName);
+        if (fieldType === "in") allInputs = allInputs.filter(f => f.name !== fieldName);
         if (fieldType === "out") allOutputs = allOutputs.filter(f => f.name !== fieldName);
         db.run(
             "UPDATE api_contract SET inputs = ?, outputs = ? WHERE endpoint = 'get-price'",
@@ -66,8 +66,8 @@ router.post('/add-rule', (req, res) => {
         let ci = 0;
         while (req.body[`g${gi}_field${ci}`]) {
             const field = req.body[`g${gi}_field${ci}`].trim();
-            const op    = req.body[`g${gi}_op${ci}`];
-            const val   = (req.body[`g${gi}_val${ci}`] || "").trim();
+            const op = req.body[`g${gi}_op${ci}`];
+            const val = (req.body[`g${gi}_val${ci}`] || "").trim();
             if (field && op && val) conditions.push({ field, operator: op, value: val });
             ci++;
         }
@@ -79,7 +79,7 @@ router.post('/add-rule', (req, res) => {
     if (groups.length === 0) return res.redirect('/dashboard');
 
     db.get("SELECT rules FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
-        const rules    = parseRules(row && row.rules);
+        const rules = parseRules(row && row.rules);
         const priority = parseInt(req.body.priority) || 0;
         rules.push({ groups, priority, discount: parseFloat(discount) / 100 });
         db.run(
@@ -147,7 +147,7 @@ router.post('/add-event-discount', (req, res) => {
         entry.day = parseInt(b.day); entry.month = parseInt(b.month);
     } else {
         entry.startDay = parseInt(b.startDay); entry.startMonth = parseInt(b.startMonth);
-        entry.endDay   = parseInt(b.endDay);   entry.endMonth   = parseInt(b.endMonth);
+        entry.endDay = parseInt(b.endDay); entry.endMonth = parseInt(b.endMonth);
     }
     db.get("SELECT event_discounts FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
         const list = parseEventDiscounts(row && row.event_discounts);
@@ -176,17 +176,17 @@ router.post('/add-items', (req, res) => {
     if (!b.itemId || !b.itemId.trim()) return res.redirect('/dashboard');
 
     const isFixed = b.fixed === '1';
-    const entry   = { itemId: b.itemId.trim(), name: (b.name || '').trim() };
+    const entry = { itemId: b.itemId.trim(), name: (b.name || '').trim() };
 
     if (isFixed) {
         entry.fixed = true;
     } else {
         entry.type = b.type;
         if (b.type === 'day') {
-            entry.day   = parseInt(b.day);      entry.month      = parseInt(b.month);
+            entry.day = parseInt(b.day); entry.month = parseInt(b.month);
         } else {
-            entry.startDay   = parseInt(b.startDay);   entry.startMonth = parseInt(b.startMonth);
-            entry.endDay     = parseInt(b.endDay);     entry.endMonth   = parseInt(b.endMonth);
+            entry.startDay = parseInt(b.startDay); entry.startMonth = parseInt(b.startMonth);
+            entry.endDay = parseInt(b.endDay); entry.endMonth = parseInt(b.endMonth);
         }
     }
 
@@ -194,10 +194,10 @@ router.post('/add-items', (req, res) => {
     Object.keys(b).forEach(key => {
         const m = key.match(/^cond_field_(\d+)$/);
         if (!m) return;
-        const i  = m[1];
-        const f  = b['cond_field_' + i];
-        const op = b['cond_op_'    + i];
-        const v  = (b['cond_val_'  + i] || '').trim();
+        const i = m[1];
+        const f = b['cond_field_' + i];
+        const op = b['cond_op_' + i];
+        const v = (b['cond_val_' + i] || '').trim();
         if (f && op && v) conditionsList.push({ field: f, operator: op, value: v });
     });
     if (conditionsList.length > 0) entry.conditions = [conditionsList];
@@ -208,7 +208,7 @@ router.post('/add-items', (req, res) => {
         const prices = {};
         regions.forEach(r => {
             const priceVal = parseFloat(b['price_' + r.id]);
-            const currVal  = b['currency_' + r.id] || r.currency || 'EUR';
+            const currVal = b['currency_' + r.id] || r.currency || 'EUR';
             if (!isNaN(priceVal) && priceVal > 0) {
                 activeRegions.push(r.id);
                 prices[r.id] = { price: priceVal, currency: currVal };
@@ -253,16 +253,16 @@ router.post('/add-decoration', (req, res) => {
         entry.day = parseInt(b.day); entry.month = parseInt(b.month);
     } else {
         entry.startDay = parseInt(b.startDay); entry.startMonth = parseInt(b.startMonth);
-        entry.endDay   = parseInt(b.endDay);   entry.endMonth   = parseInt(b.endMonth);
+        entry.endDay = parseInt(b.endDay); entry.endMonth = parseInt(b.endMonth);
     }
 
     const conditions = [];
     Object.keys(b).forEach(key => {
         if (key.startsWith('dec_cond_field_')) {
             const idx = key.split('_').pop();
-            const f   = b[key];
-            const op  = b['dec_cond_op_'  + idx];
-            const v   = (b['dec_cond_val_' + idx] || '').trim();
+            const f = b[key];
+            const op = b['dec_cond_op_' + idx];
+            const v = (b['dec_cond_val_' + idx] || '').trim();
             if (f && op && v) conditions.push({ field: f, operator: op, value: v });
         }
     });
@@ -340,15 +340,15 @@ router.post('/update-item-price', (req, res) => {
     const { itemId, region, price, currency } = req.body;
     if (!itemId || !region) return res.redirect('/dashboard');
 
-    const isEmpty  = !price || price.trim() === '';
+    const isEmpty = !price || price.trim() === '';
     const priceVal = isEmpty ? null : parseFloat(price);
 
     const updateEntry = (add) => {
         db.get("SELECT seasonal_items FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
-            const list  = parseSeasonalItems(row && row.seasonal_items);
+            const list = parseSeasonalItems(row && row.seasonal_items);
             const entry = list.find(it => it.itemId === itemId);
             if (!entry) return res.redirect('/dashboard');
-            if (!entry.prices)        entry.prices = {};
+            if (!entry.prices) entry.prices = {};
             if (!entry.activeRegions) entry.activeRegions = [];
             if (add) {
                 entry.prices[region] = { price: priceVal, currency: currency || 'EUR' };
