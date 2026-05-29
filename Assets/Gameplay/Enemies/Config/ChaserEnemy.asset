@@ -1,0 +1,22 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5dcd2da0c4e443f490a18a1caf6e135e, type: 3}
+  m_Name: ChaserEnemy
+  m_EditorClassIdentifier: Assembly-CSharp::EnemyDataSO
+  EnemyName: ChaserEnemy
+  EnemyPrefab: {fileID: 4099976150345173949, guid: 211412eaf01fb1845abae84ba768cd4c,
+    type: 3}
+  EnemyHealth: 50
+  EnemyDamage: 10
+  EnemySpeed: 2
+  EnemyType: 0
+  XPToGive: 100
