@@ -483,9 +483,17 @@ MonoBehaviour:
     displayName: Shield
     icon: {fileID: -1109216763292184008, guid: 6517cb780752b8444abef407023a4f89, type: 3}
     effect: {fileID: 0}
+  - itemId: bow
+    displayName: Bow
+    icon: {fileID: 21300000, guid: 895e1c03b3c4d654192e865f37bfc5fb, type: 3}
+    effect: {fileID: 0}
   - itemId: healthPotion
     displayName: Health Potion
     icon: {fileID: 21300000, guid: 7b7cb6379b53443c7b4a0abe99170d5d, type: 3}
+    effect: {fileID: 0}
+  - itemId: speedPotion
+    displayName: Speed Potion
+    icon: {fileID: 21300000, guid: 56a9949be66d04c1c9384d0648d1c4e6, type: 3}
     effect: {fileID: 0}
   shopBackgroundImage: {fileID: 352543872}
   normalShopImage: {fileID: -2765467171962141693, guid: a322c18e6fdebe54e839038bc6990429,
@@ -767,7 +775,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!224 &645686199
 RectTransform:
   m_ObjectHideFlags: 0
@@ -1222,7 +1230,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: UnityEngine.UI::UnityEngine.UI.Image
   m_Material: {fileID: 0}
-  m_Color: {r: 0, g: 0, b: 0, a: 0.5882353}
+  m_Color: {r: 0.32156864, g: 0.32156864, b: 0.32156864, a: 0.5882353}
   m_RaycastTarget: 1
   m_RaycastPadding: {x: 0, y: 0, z: 0, w: 0}
   m_Maskable: 1
@@ -1280,7 +1288,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: 150, y: -800}
+  m_AnchoredPosition: {x: 150, y: -930}
   m_SizeDelta: {x: 100, y: 100}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &1121963183
@@ -1292,23 +1300,21 @@ MonoBehaviour:
   m_GameObject: {fileID: 1121963181}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 30649d3a9faa99c48a7b1166b86bf2a0, type: 3}
+  m_Script: {fileID: 11500000, guid: 8a8695521f0d02e499659fee002a26c2, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: UnityEngine.UI::UnityEngine.UI.HorizontalLayoutGroup
+  m_EditorClassIdentifier: UnityEngine.UI::UnityEngine.UI.GridLayoutGroup
   m_Padding:
     m_Left: 0
     m_Right: 0
     m_Top: 0
     m_Bottom: 0
-  m_ChildAlignment: 4
-  m_Spacing: 50
-  m_ChildForceExpandWidth: 1
-  m_ChildForceExpandHeight: 1
-  m_ChildControlWidth: 0
-  m_ChildControlHeight: 0
-  m_ChildScaleWidth: 0
-  m_ChildScaleHeight: 0
-  m_ReverseArrangement: 0
+  m_ChildAlignment: 0
+  m_StartCorner: 0
+  m_StartAxis: 0
+  m_CellSize: {x: 150, y: 150}
+  m_Spacing: {x: 150, y: 150}
+  m_Constraint: 2
+  m_ConstraintCount: 3
 --- !u!1 &1146254727
 GameObject:
   m_ObjectHideFlags: 0
@@ -1343,7 +1349,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: 0, y: 93.5}
+  m_AnchoredPosition: {x: 0, y: 113.5}
   m_SizeDelta: {x: 1000, y: 50}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &1146254729
@@ -1366,9 +1372,7 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_text: 'The Gilded Lily
-
-'
+  m_text: The Rusty Anvil
   m_isRightToLeft: 0
   m_fontAsset: {fileID: 11400000, guid: 3df3568c1cd0bee458cbd7733720f576, type: 2}
   m_sharedMaterial: {fileID: 3164823707177299565, guid: 3df3568c1cd0bee458cbd7733720f576,
@@ -1396,13 +1400,13 @@ MonoBehaviour:
   m_faceColor:
     serializedVersion: 2
     rgba: 4294967295
-  m_fontSize: 40
-  m_fontSizeBase: 40
+  m_fontSize: 48
+  m_fontSizeBase: 48
   m_fontWeight: 400
   m_enableAutoSizing: 0
   m_fontSizeMin: 18
   m_fontSizeMax: 72
-  m_fontStyle: 0
+  m_fontStyle: 1
   m_HorizontalAlignment: 2
   m_VerticalAlignment: 512
   m_textAlignment: 65535
@@ -1930,7 +1934,7 @@ RectTransform:
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
   m_AnchoredPosition: {x: 550, y: -470}
-  m_SizeDelta: {x: 717, y: 364}
+  m_SizeDelta: {x: 860.4, y: 436.8}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &1643870852
 MonoBehaviour:
@@ -2055,13 +2059,13 @@ MonoBehaviour:
   m_faceColor:
     serializedVersion: 2
     rgba: 4294967295
-  m_fontSize: 155
-  m_fontSizeBase: 155
+  m_fontSize: 186
+  m_fontSizeBase: 186
   m_fontWeight: 400
   m_enableAutoSizing: 0
   m_fontSizeMin: 18
   m_fontSizeMax: 72
-  m_fontStyle: 0
+  m_fontStyle: 1
   m_HorizontalAlignment: 2
   m_VerticalAlignment: 512
   m_textAlignment: 65535
