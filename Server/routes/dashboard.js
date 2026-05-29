@@ -4,8 +4,10 @@ const geoip = require('geoip-lite');
 const { db } = require('../db');
 const { parseFields, parseRules, parseEventDiscounts, parseSeasonalItems, parseDecorations, parseJSON } = require('../helpers');
 const { getDebugIp, detectRegion } = require('../geo');
+const { getRegionsCache } = require('../cache');
 
 router.get('/dashboard', (req, res) => {
+    const errorType = req.query.error || null;
     db.get("SELECT * FROM api_contract WHERE endpoint = 'get-price'", (errContract, contract) => {
         db.get("SELECT name FROM events WHERE id = 1", (errEvent, currentEvent) => {
 
@@ -36,9 +38,9 @@ router.get('/dashboard', (req, res) => {
 
             function renderRules(rules) {
                 if (rules.length === 0) return `<p class="empty">Cap regla definida.</p>`;
-                return rules.map((rule, i) => {
+                return rules.filter(rule => rule.groups && Array.isArray(rule.groups)).map((rule, i) => {
                     const groupsHtml = rule.groups.map((group, gi) => {
-                        const condsHtml = group.conditions.map((c, ci) =>
+                        const condsHtml = (group.conditions || []).map((c, ci) =>
                             `${ci > 0 ? '<span class="logic-op">∧</span>' : ''}
                              <code>${c.field}</code>
                              <span class="op">${c.operator}</span>
@@ -69,12 +71,27 @@ router.get('/dashboard', (req, res) => {
                 return entries.map((entry, i) => {
                     const realIndex = globalList ? globalList.indexOf(entry) : i;
                     let dateHtml = '';
-                    if (!entry.fixed) {
+                    // Regió amb preu (per items fixos i de temporada)
+                    if (entry.hasOwnProperty('itemId')) {
+                        const co = (entry.activeRegions && entry.activeRegions.length > 0)
+                            ? entry.activeRegions.join(', ')
+                            : '<span style="color:#f87171;font-weight:600;">sense preu</span>';
+                        const regionHtml = '<span class="arrow">·</span><span style="color:var(--text-2);font-size:12px;">' + co + '</span>';
+                        if (!entry.fixed) {
+                            const d = entry.type === 'day'
+                                ? String(entry.day).padStart(2, '0') + '/' + String(entry.month).padStart(2, '0')
+                                : String(entry.startDay).padStart(2, '0') + '/' + String(entry.startMonth).padStart(2, '0')
+                                + ' → ' + String(entry.endDay).padStart(2, '0') + '/' + String(entry.endMonth).padStart(2, '0');
+                            dateHtml = '<span class="arrow">·</span><code>' + d + '</code>' + regionHtml;
+                        } else {
+                            dateHtml = regionHtml;
+                        }
+                    } else if (!entry.fixed) {
                         const d = entry.type === 'day'
                             ? String(entry.day).padStart(2, '0') + '/' + String(entry.month).padStart(2, '0')
                             : String(entry.startDay).padStart(2, '0') + '/' + String(entry.startMonth).padStart(2, '0')
                             + ' → ' + String(entry.endDay).padStart(2, '0') + '/' + String(entry.endMonth).padStart(2, '0');
-                        const co = (entry.activeRegions && entry.activeRegions.length > 0) ? entry.activeRegions.join(', ') : (entry.country || 'Tots');
+                        const co = entry.country || 'Tots';
                         dateHtml = '<span class="arrow">·</span><code>' + d + '</code>'
                             + '<span class="arrow">·</span><span style="color:var(--text-2);font-size:12px;">' + co + '</span>';
                     }
@@ -218,7 +235,7 @@ addGroup();
                 + '<option value="!=">!=</option>';
             const clientScript = buildClientScript(safeFieldOptions, safeOpOptions);
 
-            db.all('SELECT * FROM regions ORDER BY is_default ASC, name ASC', (err, regions) => {
+            getRegionsCache((err, regions) => {
                 regions = regions || [];
                 const debugIp = getDebugIp();
                 const geoSim = geoip.lookup(debugIp);
@@ -379,6 +396,21 @@ addGroup();
         <div class="meta-item"><div class="meta-label">IP Simulada</div><div class="meta-value">${regionSim} · ${debugIp}</div></div>
     </div>
 
+    ${errorType ? `
+    <div id="error-banner" style="margin-bottom:16px;padding:14px 18px;background:rgba(248,113,113,0.08);border:1px solid rgba(248,113,113,0.3);border-radius:8px;color:#f87171;font-size:13px;display:flex;align-items:center;gap:12px;">
+        <span style="font-size:18px;flex-shrink:0;">&#9888;</span>
+        <span style="flex:1;">
+            ${errorType === 'duplicate_item'
+                                    ? '<strong>Item duplicat:</strong> Ja existeix un item amb aquest ID. Ves a la pestanya <strong>Contingut</strong> per eliminar-lo o canviar-li l&#39;ID.'
+                                    : errorType === 'duplicate_decoration'
+                                        ? '<strong>Decoraci&oacute; duplicada:</strong> Ja existeix una decoraci&oacute; amb aquest ID. Ves a la pestanya <strong>Contingut</strong> per eliminar-la o canviar-li l&#39;ID.'
+                                        : errorType === 'item_no_price'
+                                            ? '<strong>Sense preu:</strong> Els items de temporada han de tenir preu en almenys una regi&oacute;. Els items fixos poden no tenir-ne.'
+                                            : '<strong>Error:</strong> ' + errorType}
+        </span>
+        <button onclick="document.getElementById(&#39;error-banner&#39;).remove()" style="background:none;border:none;color:#f87171;font-size:20px;cursor:pointer;padding:0;line-height:1;opacity:0.7;" title="Tancar">&#215;</button>
+    </div>` : ''}
+
     <nav class="tab-nav">
         <button class="tab-btn" data-tab="config"><span class="tab-icon">⚙</span>Configuració</button>
         <button class="tab-btn" data-tab="preus"><span class="tab-icon">◈</span>Preus &amp; Regles</button>
@@ -442,7 +474,7 @@ addGroup();
                         <span class="rule-body">
                             <strong style="color:#e2e4e9;">${r.name}</strong>
                             <span class="arrow">·</span>
-                            <code style="color:var(--text-2);font-size:11px;">${JSON.parse(r.countries || '[]').join(', ') || '*'}</code>
+                            <code style="color:var(--text-2);font-size:11px;">${(Array.isArray(r.countries) ? r.countries : (() => { try { return JSON.parse(r.countries || '[]'); } catch (e) { return r.countries ? [r.countries] : []; } })()).join(', ') || '*'}</code>
                             <span class="prio-badge" style="color:#34d399;background:rgba(52,211,153,0.1);border-color:rgba(52,211,153,0.3);">${r.currency}</span>
                             ${r.is_default ? '<span class="prio-badge" style="color:#f87171;background:rgba(248,113,113,0.1);border-color:rgba(248,113,113,0.3);">DEFAULT</span>' : ''}
                         </span>
@@ -634,6 +666,16 @@ addGroup();
                             <input type="number" name="month" min="1" max="12" placeholder="MM" style="width:52px;">
                         </div>
                     </div>
+                    <div style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+                        <span class="add-label" style="color:var(--text-2);">Condicions del jugador</span>
+                        <span class="prio-badge" style="color:var(--text-3);border-color:var(--border);">opcional · AND</span>
+                        <button type="button" onclick="addItemCond()"
+                                style="padding:4px 10px;font-size:11px;background:var(--surface);border:1px dashed var(--border2);color:var(--text-2);border-radius:4px;cursor:pointer;">
+                            + Condició
+                        </button>
+                    </div>
+                    <div id="item-conds-list"></div>
+                    <p style="font-size:11px;color:var(--text-3);margin-top:4px;">Totes les condicions s'han de complir (AND). Deixa buit = apareix sempre.</p>
                     <div class="add-row" style="margin-top:6px;gap:8px;align-items:center;">
                         <button type="submit" class="btn-add" style="margin-left:auto;">Afegir item</button>
                     </div>
@@ -642,6 +684,29 @@ addGroup();
                 function toggleFixed(isFixed) {
                     document.getElementById("date-fields").style.display = isFixed ? "none" : "block";
                     document.getElementById("type-selector").style.display = isFixed ? "none" : "flex";
+                }
+                var _ic = 0;
+                function addItemCond() {
+                    var i = _ic++;
+                    var row = document.createElement('div');
+                    row.className = 'add-row';
+                    row.style.cssText = 'margin-top:4px;flex-wrap:wrap;gap:6px;align-items:center;';
+                    row.id = 'ic-' + i;
+                    row.innerHTML =
+                        '<select name="cond_field_'+i+'" style="min-width:110px;">'
+                        + '<option value="playerLevel">playerLevel</option>'
+                        + '<option value="playerXP">playerXP</option>'
+                        + '<option value="playerClass">playerClass</option>'
+                        + '<option value="daysPlayed">daysPlayed</option>'
+                        + '</select>'
+                        + '<select name="cond_op_'+i+'">'
+                        + '<option value=">=">&gt;=</option><option value="<=">&lt;=</option>'
+                        + '<option value=">">&gt;</option><option value="<">&lt;</option>'
+                        + '<option value="==">==</option><option value="!=">!=</option>'
+                        + '</select>'
+                        + '<input type="text" name="cond_val_'+i+'" placeholder="ex: 10 o warrior" style="width:90px;">'
+                        + '<button type="button" onclick="this.parentElement.remove()" class="del-btn">×</button>';
+                    document.getElementById('item-conds-list').appendChild(row);
                 }
                 </script>
             </div>
@@ -652,7 +717,66 @@ addGroup();
                 <span class="section-hint">Objectes que només apareixen en èpoques concretes</span>
             </div>
             <div class="section-body">
-                ${decorationRows}
+                ${(() => {
+                                if (!decorations.length) return '<p class="empty">Cap decoració definida.</p>';
+                                return decorations.map((dc, i) => {
+                                    const existingConds = (dc.conditions && dc.conditions[0]) ? dc.conditions[0] : [];
+                                    const safeId = dc.decorationId.replace(/[^a-zA-Z0-9]/g, '_');
+                                    const condBadges = existingConds.map(cond =>
+                                        '<span class="prio-badge" style="margin-left:8px;color:#f87171;background:rgba(248,113,113,0.08);border-color:rgba(248,113,113,0.25);">'
+                                        + cond.field + ' ' + cond.operator + ' ' + cond.value + '</span>'
+                                    ).join('');
+                                    const FIELD_OPTS_DC = ['playerLevel', 'playerXP', 'playerClass', 'daysPlayed'];
+                                    const OP_OPTS_DC = ['>=', '<=', '>', '<', '==', '!='];
+                                    const existingRows = existingConds.map((cond, ci) => {
+                                        const fOpts = FIELD_OPTS_DC.map(f =>
+                                            '<option value="' + f + '"' + (f === cond.field ? ' selected' : '') + '>' + f + '</option>').join('');
+                                        const oOpts = OP_OPTS_DC.map(o =>
+                                            '<option value="' + o + '"' + (o === cond.operator ? ' selected' : '') + '>' + o + '</option>').join('');
+                                        return '<div class="add-row" style="margin-top:4px;gap:6px;align-items:center;flex-wrap:wrap;">'
+                                            + '<select name="dc_field_' + ci + '" style="min-width:110px;">' + fOpts + '</select>'
+                                            + '<select name="dc_op_' + ci + '">' + oOpts + '</select>'
+                                            + '<input type="text" name="dc_val_' + ci + '" value="' + cond.value + '" style="width:90px;">'
+                                            + '<button type="button" onclick="this.parentElement.remove()" class="del-btn">×</button>'
+                                            + '</div>';
+                                    }).join('');
+                                    let dateHtml = '';
+                                    if (dc.type === 'day') {
+                                        dateHtml = String(dc.day).padStart(2, '0') + '/' + String(dc.month).padStart(2, '0');
+                                    } else {
+                                        dateHtml = String(dc.startDay).padStart(2, '0') + '/' + String(dc.startMonth).padStart(2, '0')
+                                            + ' → ' + String(dc.endDay).padStart(2, '0') + '/' + String(dc.endMonth).padStart(2, '0');
+                                    }
+                                    const regionLabel = dc.country || 'Tots';
+                                    return '<div class="rule-row" style="flex-direction:column;align-items:flex-start;gap:8px;margin-bottom:8px;background:rgba(96,165,250,0.07);border-color:rgba(96,165,250,0.2);">'
+                                        + '<div style="display:flex;align-items:center;gap:8px;width:100%;flex-wrap:wrap;">'
+                                        + '<code style="color:#34d399;">' + dc.decorationId + '</code>'
+                                        + '<span style="color:var(--text-2);font-size:12px;">' + dc.name + '</span>'
+                                        + '<code style="font-size:11px;color:var(--text-3);">' + dateHtml + '</code>'
+                                        + '<span style="font-size:11px;color:var(--text-3);">' + regionLabel + '</span>'
+                                        + condBadges
+                                        + '<button type="button"'
+                                        + '<button type="button"'
+                                        + ' onclick="togglePanel(&quot;dcpanel_' + safeId + '&quot;)"'
+                                        + ' style="padding:3px 10px;font-size:11px;background:var(--surface);border:1px solid var(--border);color:var(--text-2);border-radius:4px;cursor:pointer;margin-left:4px;">'
+                                        + '&#10002; Condicions</button>'
+                                        + '<a href="/delete-decoration?index=' + i + '"'
+                                        + ' onclick="return confirm(&quot;Eliminar ' + dc.decorationId + '?&quot;)"'
+                                        + ' class="del-btn" style="margin-left:auto;">&#215;</a>'
+                                        + '</div>'
+                                        + '<div id="dcpanel_' + safeId + '" style="display:none;width:100%;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;">'
+                                        + '<form action="/update-decoration-conditions" method="POST">'
+                                        + '<input type="hidden" name="decorationId" value="' + dc.decorationId + '">'
+                                        + '<div id="dclist_' + safeId + '">' + existingRows + '</div>'
+                                        + '<div style="display:flex;gap:8px;margin-top:8px;align-items:center;">'
+                                        + '<button type="button" onclick="addDCond(`' + safeId + '`)" style="padding:4px 10px;font-size:11px;background:var(--surface);border:1px dashed var(--border2);color:var(--text-2);border-radius:4px;cursor:pointer;">+ Condici&oacute;</button>'
+                                        + '<button type="submit" class="btn-add" style="margin-left:auto;padding:6px 14px;font-size:12px;">Guardar condicions</button>'
+                                        + '</div>'
+                                        + '<p style="font-size:11px;color:var(--text-3);margin-top:6px;">Buit = sense condicions (sempre visible)</p>'
+                                        + '</form></div>'
+                                        + '</div>';
+                                }).join('');
+                            })()}
                 <form action="/add-decoration" method="POST">
                     <div class="add-row" style="margin-top:10px;flex-wrap:wrap;gap:8px;align-items:center;">
                         <span class="add-label">ID</span>
@@ -732,9 +856,40 @@ addGroup();
                 ${(() => {
                                 const allItems = seasonalItems;
                                 if (!allItems.length) return '<p class="empty">Cap item definit. Afegeix items a la secció Gestió d\'Items.</p>';
+                                const FIELD_OPTS_ITEM = ['playerLevel', 'playerXP', 'playerClass', 'daysPlayed'];
+                                const OP_OPTS = ['>=', '<=', '>', '<', '==', '!='];
+
+                                function condEditorItem(itemId, existingConds) {
+                                    const safeId = itemId.replace(/[^a-zA-Z0-9]/g, '_');
+                                    const rows = (existingConds || []).map((c, i) => {
+                                        const fieldOpts = FIELD_OPTS_ITEM.map(f =>
+                                            '<option value="' + f + '"' + (f === c.field ? ' selected' : '') + '>' + f + '</option>').join('');
+                                        const opOpts = OP_OPTS.map(o =>
+                                            '<option value="' + o + '"' + (o === c.operator ? ' selected' : '') + '>' + o + '</option>').join('');
+                                        return '<div class="add-row" style="margin-top:4px;gap:6px;align-items:center;flex-wrap:wrap;" id="icrow_' + safeId + '_' + i + '">'
+                                            + '<select name="ic_field_' + i + '" style="min-width:110px;">' + fieldOpts + '</select>'
+                                            + '<select name="ic_op_' + i + '">' + opOpts + '</select>'
+                                            + '<input type="text" name="ic_val_' + i + '" value="' + c.value + '" style="width:90px;">'
+                                            + '<button type="button" onclick="this.parentElement.remove()" class="del-btn">×</button>'
+                                            + '</div>';
+                                    }).join('');
+                                    return '<div id="icpanel_' + safeId + '" style="display:none;margin-top:10px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;">'
+                                        + '<form action="/update-item-conditions" method="POST">'
+                                        + '<input type="hidden" name="itemId" value="' + itemId + '">'
+                                        + '<div id="iclist_' + safeId + '">' + rows + '</div>'
+                                        + '<div style="display:flex;gap:8px;margin-top:8px;align-items:center;">'
+                                        + '<button type="button" onclick="addICond(`' + safeId + '`)" style="padding:4px 10px;font-size:11px;background:var(--surface);border:1px dashed var(--border2);color:var(--text-2);border-radius:4px;cursor:pointer;">+ Condició</button>'
+                                        + '<button type="submit" class="btn-add" style="margin-left:auto;padding:6px 14px;font-size:12px;">Guardar condicions</button>'
+                                        + '</div>'
+                                        + '<p style="font-size:11px;color:var(--text-3);margin-top:6px;">Buit = sense condicions (sempre visible)</p>'
+                                        + '</form></div>';
+                                }
+
                                 const renderGroup = (items, label, color) => {
                                     if (!items.length) return '';
                                     const rows = items.map(it => {
+                                        const existingConds = (it.conditions && it.conditions[0]) ? it.conditions[0] : [];
+                                        const safeId = it.itemId.replace(/[^a-zA-Z0-9]/g, '_');
                                         const regionRows = regions.map(r => {
                                             const existing = it.prices && it.prices[r.id];
                                             const curPrice = existing ? existing.price : '';
@@ -752,17 +907,27 @@ addGroup();
                                         <option value="JPY" ${curCurr === 'JPY' ? 'selected' : ''}>JPY</option>
                                         <option value="GBP" ${curCurr === 'GBP' ? 'selected' : ''}>GBP</option>
                                     </select>
-                                    <button type="submit" class="btn-add" style="padding:5px 10px;font-size:11px;">✓</button>
+                                    <button type="submit" class="btn-add" style="padding:5px 10px;font-size:11px;">&#10003;</button>
                                 </form>`;
                                         }).join('');
+                                        const condBadge = existingConds.length > 0
+                                            ? '<span class="prio-badge" style="color:#f87171;background:rgba(248,113,113,0.08);border-color:rgba(248,113,113,0.25);">' + existingConds.length + ' cond.</span>'
+                                            : '<span class="prio-badge" style="color:var(--text-3);border-color:var(--border);">sense cond.</span>';
                                         return `<div class="rule-row" style="flex-direction:column;align-items:flex-start;gap:8px;margin-bottom:8px;">
                                 <div style="display:flex;align-items:center;gap:8px;width:100%;">
                                     <code style="color:${color};font-size:13px;">${it.itemId}</code>
                                     <span style="color:var(--text-2);font-size:12px;">${it.name}</span>
+                                    ${condBadge}
+                                    <button type="button"
+                                    onclick="togglePanel(&quot;icpanel_${safeId}&quot;)"
+                                        style="padding:3px 10px;font-size:11px;background:var(--surface);border:1px solid var(--border);color:var(--text-2);border-radius:4px;cursor:pointer;margin-left:4px;">
+                                        ✎ Condicions
+                                    </button>
                                     <a href="/delete-items?index=${allItems.indexOf(it)}"
                                        onclick="return confirm('Eliminar ${it.itemId}?')" class="del-btn" style="margin-left:auto;">×</a>
                                 </div>
                                 <div style="display:flex;flex-wrap:wrap;gap:4px;">${regionRows}</div>
+                                ${condEditorItem(it.itemId, existingConds)}
                             </div>`;
                                     }).join('');
                                     return `<div class="sub-label">${label}</div>${rows}`;
@@ -804,11 +969,69 @@ addGroup();
     </div>
 
     <script>
+    // Helpers per als editors de condicions inline
+    var _icCounters = {};
+    function addICond(safeId) {
+        if (!_icCounters[safeId]) _icCounters[safeId] = 0;
+        var i = _icCounters[safeId]++;
+        // Busquem quants ja hi ha per evitar col·lisions de noms
+        var list = document.getElementById('iclist_' + safeId);
+        var existing = list ? list.querySelectorAll('[name^="ic_field_"]').length : i;
+        var idx = existing;
+        var row = document.createElement('div');
+        row.className = 'add-row';
+        row.style.cssText = 'margin-top:4px;gap:6px;align-items:center;flex-wrap:wrap;';
+        row.innerHTML = '<select name="ic_field_'+idx+'" style="min-width:110px;">'
+            + '<option value="playerLevel">playerLevel</option>'
+            + '<option value="playerXP">playerXP</option>'
+            + '<option value="playerClass">playerClass</option>'
+            + '<option value="daysPlayed">daysPlayed</option>'
+            + '</select>'
+            + '<select name="ic_op_'+idx+'">'
+            + '<option value=">=">&gt;=</option><option value="<=">&lt;=</option>'
+            + '<option value=">">&gt;</option><option value="<">&lt;</option>'
+            + '<option value="==">==</option><option value="!=">!=</option>'
+            + '</select>'
+            + '<input type="text" name="ic_val_'+idx+'" placeholder="ex: 10" style="width:90px;">'
+            + '<button type="button" onclick="this.parentElement.remove()" class="del-btn">×</button>';
+        if (list) list.appendChild(row);
+    }
+
+    var _dcCounters = {};
+    function addDCond(safeId) {
+        var list = document.getElementById('dclist_' + safeId);
+        var idx = list ? list.querySelectorAll('[name^="dc_field_"]').length : 0;
+        var row = document.createElement('div');
+        row.className = 'add-row';
+        row.style.cssText = 'margin-top:4px;gap:6px;align-items:center;flex-wrap:wrap;';
+        row.innerHTML = '<select name="dc_field_'+idx+'" style="min-width:110px;">'
+            + '<option value="playerLevel">playerLevel</option>'
+            + '<option value="playerXP">playerXP</option>'
+            + '<option value="playerClass">playerClass</option>'
+            + '<option value="daysPlayed">daysPlayed</option>'
+            + '</select>'
+            + '<select name="dc_op_'+idx+'">'
+            + '<option value=">=">&gt;=</option><option value="<=">&lt;=</option>'
+            + '<option value=">">&gt;</option><option value="<">&lt;</option>'
+            + '<option value="==">==</option><option value="!=">!=</option>'
+            + '</select>'
+            + '<input type="text" name="dc_val_'+idx+'" placeholder="ex: 10" style="width:90px;">'
+            + '<button type="button" onclick="this.parentElement.remove()" class="del-btn">×</button>';
+        if (list) list.appendChild(row);
+    }
+
+    function togglePanel(id) {
+        var el = document.getElementById(id);
+        if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+    }
+
     function toggleType(selectElement, rangeId, dayId) {
         document.getElementById(rangeId).style.display = selectElement.value === 'day' ? 'none' : 'flex';
         document.getElementById(dayId).style.display   = selectElement.value === 'day' ? 'flex' : 'none';
     }
     (function() {
+        var TABS = ['config','preus','contingut','events'];
+
         function showTab(id) {
             document.querySelectorAll('.tab-panel').forEach(function(p) {
                 p.style.display = p.id === 'tab-' + id ? 'block' : 'none';
@@ -818,12 +1041,35 @@ addGroup();
             });
             try { localStorage.setItem('liveops-tab', id); } catch(e) {}
         }
+
         document.querySelectorAll('.tab-btn').forEach(function(btn) {
             btn.addEventListener('click', function() { showTab(this.dataset.tab); });
         });
-        var saved = '';
-        try { saved = localStorage.getItem('liveops-tab') || ''; } catch(e) {}
-        showTab(['config','preus','contingut','events'].indexOf(saved) >= 0 ? saved : 'config');
+
+        // Prioritat: ?error → tab forçat | ?tab → tab de l'acció | localStorage → últim tab
+        var urlParams = new URLSearchParams(window.location.search);
+        var errorParam = urlParams.get('error');
+        var tabParam   = urlParams.get('tab');
+        if (errorParam && (errorParam === 'duplicate_item' || errorParam === 'duplicate_decoration')) {
+            showTab('contingut');
+        } else if (tabParam && TABS.indexOf(tabParam) >= 0) {
+            showTab(tabParam);
+        } else {
+            var saved = '';
+            try { saved = localStorage.getItem('liveops-tab') || ''; } catch(e) {}
+            showTab(TABS.indexOf(saved) >= 0 ? saved : 'config');
+        }
+
+        // Toast de confirmació si la URL té ?ok=1 (enviat per accions futures)
+        var okParam = urlParams.get('ok');
+        if (okParam) {
+            var toast = document.createElement('div');
+            toast.textContent = '✓ Canvis guardats correctament';
+            toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#1a2e1a;border:1px solid rgba(52,211,153,0.4);color:#34d399;padding:12px 20px;border-radius:8px;font-size:13px;font-weight:500;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,0.4);transition:opacity 0.4s;';
+            document.body.appendChild(toast);
+            setTimeout(function() { toast.style.opacity = '0'; }, 2500);
+            setTimeout(function() { toast.remove(); }, 3000);
+        }
     })();
     </script>
 

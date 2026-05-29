@@ -1,5 +1,4 @@
 const geoip = require('geoip-lite');
-const { db } = require('./db');
 const { parseJSON } = require('./helpers');
 
 let debugSimulatedIp = "84.88.1.1";
@@ -17,7 +16,8 @@ function geoMatchesCountry(geo, code) {
 function detectRegion(geo, regions) {
     if (!geo || !regions || !regions.length) return 'US';
     for (const r of regions.filter(r => !r.is_default)) {
-        const codes = parseJSON(r.countries);
+        // countries pot ser array (des de la cache) o string JSON (des de la DB directa)
+        const codes = Array.isArray(r.countries) ? r.countries : parseJSON(r.countries);
         if (codes.some(c => geoMatchesCountry(geo, c))) return r.id;
     }
     const def = regions.find(r => r.is_default);
@@ -25,9 +25,10 @@ function detectRegion(geo, regions) {
 }
 
 function getRegionForReq(req, cb) {
-    db.all('SELECT * FROM regions', (err, regions) => {
+    const { getRegionsCache } = require('./cache');
+    getRegionsCache((err, regions) => {
         regions = regions || [];
-        let ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+        let ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
         if (ip.includes('127.0.0.1') || ip.includes('::1')) ip = debugSimulatedIp;
         const geo = geoip.lookup(ip);
         cb(detectRegion(geo, regions), regions);

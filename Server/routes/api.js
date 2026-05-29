@@ -1,9 +1,10 @@
 const express = require('express');
 const router = express.Router();
-const { db, getDataVersion, setDataVersion } = require('../db');
-const { parseFields, activeNames, parseRules, parseEventDiscounts, parseSeasonalItems, parseDecorations, getTtl } = require('../helpers');
+const { db, getDataVersion } = require('../db');
+const { activeNames, getTtl } = require('../helpers');
 const { getRegionForReq, isActiveNow } = require('../geo');
 const { applyRules, applyEventDiscounts } = require('../rules');
+const { getCache } = require('../cache');
 
 // GET /api/version
 router.get('/version', (req, res) => {
@@ -12,10 +13,10 @@ router.get('/version', (req, res) => {
 
 // GET /api/get-event
 router.get('/get-event', (req, res) => {
-    db.get("SELECT name, message FROM events WHERE id = 1", (err, row) => {
+    getCache((err, cache) => {
         if (err) return res.status(500).json({ error: err.message });
         getTtl(db, 'get-event', (ttl) => {
-            res.json({ name: row.name, message: row.message, cacheTtlSeconds: ttl });
+            res.json({ name: cache.event.name, message: cache.event.message, cacheTtlSeconds: ttl });
         });
     });
 });
@@ -23,23 +24,21 @@ router.get('/get-event', (req, res) => {
 // GET /api/get-contract
 // Retorna els inputs actius perquè Unity sàpiga quins camps ha d'enviar.
 router.get('/get-contract', (req, res) => {
-    db.get("SELECT inputs FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
+    getCache((err, cache) => {
         if (err) return res.status(500).json({ error: err.message });
         getTtl(db, 'get-contract', (ttl) => {
-            const activeInputs = row ? activeNames(parseFields(row.inputs)) : [];
-            res.json({ inputs: activeInputs, cacheTtlSeconds: ttl });
+            res.json({ inputs: activeNames(cache.inputs), cacheTtlSeconds: ttl });
         });
     });
 });
 
 // GET /api/get-shop
 router.get('/get-shop', (req, res) => {
-    db.get("SELECT seasonal_items FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
+    getCache((err, cache) => {
         if (err) return res.status(500).json({ error: err.message });
-        const all = parseSeasonalItems(row && row.seasonal_items);
         getRegionForReq(req, (region) => {
             const playerData = req.query;
-            const active = all
+            const active = cache.seasonalItems
                 .filter(it => isActiveNow(it, region, new Date(), playerData))
                 .map(it => it.itemId);
             getTtl(db, 'get-shop', (ttl) => {
@@ -51,12 +50,11 @@ router.get('/get-shop', (req, res) => {
 
 // GET /api/get-decorations
 router.get('/get-decorations', (req, res) => {
-    db.get("SELECT decorations FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
+    getCache((err, cache) => {
         if (err) return res.status(500).json({ error: err.message });
-        const all = parseDecorations(row && row.decorations);
         getRegionForReq(req, (region) => {
             const playerData = req.query;
-            const active = all
+            const active = cache.decorations
                 .filter(dc => isActiveNow(dc, region, new Date(), playerData))
                 .map(dc => dc.decorationId);
             getTtl(db, 'get-decorations', (ttl) => {
@@ -69,11 +67,11 @@ router.get('/get-decorations', (req, res) => {
 // POST /api/get-price
 // Calcula el preu final aplicant geolocalització i les regles actives.
 router.post('/get-price', (req, res) => {
-    db.get("SELECT * FROM api_contract WHERE endpoint = 'get-price'", (err, contract) => {
-        const allowedInputs = activeNames(parseFields(contract && contract.inputs));
-        const allowedOutputs = activeNames(parseFields(contract && contract.outputs));
-        const rules = parseRules(contract && contract.rules);
-        const eventDiscounts = parseEventDiscounts(contract && contract.event_discounts);
+    getCache((err, cache) => {
+        if (err) return res.status(500).json({ error: err.message });
+
+        const allowedInputs = activeNames(cache.inputs);
+        const allowedOutputs = activeNames(cache.outputs);
 
         let receivedData = {};
         allowedInputs.forEach(field => {
@@ -97,11 +95,12 @@ router.post('/get-price', (req, res) => {
         };
 
         const resolvePrice = (region, regions) => {
-            const rulesDiscount = applyRules(rules, receivedData);
-            const eventDiscount = applyEventDiscounts(eventDiscounts, region, new Date());
+            const rulesDiscount = applyRules(cache.rules, receivedData);
+            const eventDiscount = applyEventDiscounts(cache.eventDiscounts, region, new Date());
             const discount = Math.max(rulesDiscount, eventDiscount);
             if (discount > 0) console.log('💰 Descompte: ' + (discount * 100) + '%');
 
+            // El preu final segueix llegint de DB (varia per item+regió, no té sentit cachejat)
             db.get('SELECT * FROM shop_prices WHERE item_id = ? AND region = ?', [itemId, region], (err, row) => {
                 if (err) return res.status(500).json({ error: 'DB error' });
                 if (row) return applyAndRespond(row, discount);

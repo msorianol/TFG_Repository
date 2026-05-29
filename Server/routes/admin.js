@@ -2,12 +2,14 @@ const express = require('express');
 const router = express.Router();
 const { db, getDataVersion, setDataVersion } = require('../db');
 const { parseFields, activeNames, parseRules, parseEventDiscounts, parseSeasonalItems, parseDecorations } = require('../helpers');
+const { invalidateCache, invalidateRegionsCache, getRegionsCache } = require('../cache');
 
 // POST /force-refresh
 router.post('/force-refresh', (req, res) => {
     const v = Date.now();
     setDataVersion(v);
     db.run("INSERT OR REPLACE INTO server_config (key, value) VALUES ('data_version', ?)", [String(v)]);
+    invalidateCache();
     console.log("🚨 S'ha forçat l'actualització de la caché de tots els clients!");
     res.redirect('/dashboard');
 });
@@ -32,7 +34,8 @@ router.post('/update-contract', (req, res) => {
             (err) => {
                 if (err) console.error(err);
                 console.log("🔄 Contracte actualitzat | Inputs actius:", activeNames(allInputs));
-                res.redirect('/dashboard');
+                invalidateCache();
+                res.redirect('/dashboard?ok=1');
             }
         );
     });
@@ -49,7 +52,7 @@ router.get('/delete-field', (req, res) => {
         db.run(
             "UPDATE api_contract SET inputs = ?, outputs = ? WHERE endpoint = 'get-price'",
             [JSON.stringify(allInputs), JSON.stringify(allOutputs)],
-            () => res.redirect('/dashboard')
+            () => { invalidateCache(); res.redirect('/dashboard'); }
         );
     });
 });
@@ -91,7 +94,8 @@ router.post('/add-rule', (req, res) => {
                     .map(g => '(' + g.conditions.map(c => `${c.field} ${c.operator} ${c.value}`).join(' ∧ ') + ')')
                     .join(' ∨ ');
                 console.log(`Nova regla FND: ${fndStr} → ${discount}%`);
-                res.redirect('/dashboard');
+                invalidateCache();
+                res.redirect('/dashboard?ok=1&tab=preus');
             }
         );
     });
@@ -109,7 +113,7 @@ router.get('/delete-rule', (req, res) => {
         db.run(
             "UPDATE api_contract SET rules = ? WHERE endpoint = 'get-price'",
             [JSON.stringify(rules)],
-            () => res.redirect('/dashboard')
+            () => { invalidateCache(); res.redirect('/dashboard?ok=1&tab=preus'); }
         );
     });
 });
@@ -127,6 +131,7 @@ router.post('/update-event', (req, res) => {
             const v = Date.now();
             setDataVersion(v);
             db.run("INSERT OR REPLACE INTO server_config (key, value) VALUES ('data_version', ?)", [String(v)]);
+            invalidateCache();
             res.redirect('/dashboard');
         }
     );
@@ -142,6 +147,7 @@ router.post('/debug/set-ip', (req, res) => {
 // POST /add-event-discount
 router.post('/add-event-discount', (req, res) => {
     const b = req.body;
+    if (!b.name || !b.name.trim() || !b.discount) return res.redirect('/dashboard');
     const entry = Object.assign({}, { name: b.name.trim(), discount: parseFloat(b.discount) / 100 }, { type: b.type, country: b.country || '' });
     if (b.type === 'day') {
         entry.day = parseInt(b.day); entry.month = parseInt(b.month);
@@ -154,7 +160,7 @@ router.post('/add-event-discount', (req, res) => {
         list.push(entry);
         db.run("UPDATE api_contract SET event_discounts = ? WHERE endpoint = 'get-price'",
             [JSON.stringify(list)],
-            (err) => { if (err) console.error(err); res.redirect('/dashboard'); }
+            (err) => { if (err) console.error(err); invalidateCache(); res.redirect('/dashboard?ok=1&tab=preus'); }
         );
     });
 });
@@ -166,7 +172,7 @@ router.get('/delete-event-discount', (req, res) => {
         let list = parseEventDiscounts(row && row.event_discounts);
         if (!isNaN(index) && index >= 0 && index < list.length) list.splice(index, 1);
         db.run("UPDATE api_contract SET event_discounts = ? WHERE endpoint = 'get-price'",
-            [JSON.stringify(list)], () => res.redirect('/dashboard'));
+            [JSON.stringify(list)], () => { invalidateCache(); res.redirect('/dashboard?ok=1&tab=contingut'); });
     });
 });
 
@@ -202,7 +208,7 @@ router.post('/add-items', (req, res) => {
     });
     if (conditionsList.length > 0) entry.conditions = [conditionsList];
 
-    db.all('SELECT * FROM regions', (errReg, regions) => {
+    getRegionsCache((errReg, regions) => {
         regions = regions || [];
         const activeRegions = [];
         const prices = {};
@@ -219,12 +225,22 @@ router.post('/add-items', (req, res) => {
         });
         if (activeRegions.length > 0) { entry.activeRegions = activeRegions; entry.prices = prices; }
 
+        // Tot item (fix o de temporada) ha de tenir preu en almenys una regió
+        if (activeRegions.length === 0) {
+            console.warn('[add-items] Item sense preu ignorat:', entry.itemId);
+            return res.redirect('/dashboard?error=item_no_price&tab=contingut');
+        }
+
         db.get("SELECT seasonal_items FROM api_contract WHERE endpoint = 'get-price'", (errCon, row) => {
             const list = parseSeasonalItems(row && row.seasonal_items);
+            if (list.find(it => it.itemId === entry.itemId)) {
+                console.warn(`[add-items] Duplicat ignorat: ${entry.itemId}`);
+                return res.redirect('/dashboard?error=duplicate_item');
+            }
             list.push(entry);
             db.run("UPDATE api_contract SET seasonal_items = ? WHERE endpoint = 'get-price'",
                 [JSON.stringify(list)],
-                (errUpd) => { if (errUpd) console.error('[add-items] Error guardant:', errUpd); res.redirect('/dashboard'); });
+                (errUpd) => { if (errUpd) console.error('[add-items] Error guardant:', errUpd); invalidateCache(); res.redirect('/dashboard?ok=1&tab=contingut'); });
         });
     });
 });
@@ -241,13 +257,14 @@ router.get('/delete-items', (req, res) => {
             }
         }
         db.run("UPDATE api_contract SET seasonal_items = ? WHERE endpoint = 'get-price'",
-            [JSON.stringify(list)], () => res.redirect('/dashboard'));
+            [JSON.stringify(list)], () => { invalidateCache(); res.redirect('/dashboard'); });
     });
 });
 
 // POST /add-decoration
 router.post('/add-decoration', (req, res) => {
     const b = req.body;
+    if (!b.decorationId || !b.decorationId.trim() || !b.name || !b.name.trim()) return res.redirect('/dashboard');
     const entry = Object.assign({}, { decorationId: b.decorationId.trim(), name: b.name.trim() }, { type: b.type, country: b.country || '' });
     if (b.type === 'day') {
         entry.day = parseInt(b.day); entry.month = parseInt(b.month);
@@ -270,10 +287,14 @@ router.post('/add-decoration', (req, res) => {
 
     db.get("SELECT decorations FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
         const list = parseDecorations(row && row.decorations);
+        if (list.find(dc => dc.decorationId === entry.decorationId)) {
+            console.warn(`[add-decoration] Duplicat ignorat: ${entry.decorationId}`);
+            return res.redirect('/dashboard?error=duplicate_decoration');
+        }
         list.push(entry);
         db.run("UPDATE api_contract SET decorations = ? WHERE endpoint = 'get-price'",
             [JSON.stringify(list)],
-            (err) => { if (err) console.error(err); res.redirect('/dashboard'); }
+            (err) => { if (err) console.error(err); invalidateCache(); res.redirect('/dashboard?ok=1&tab=contingut'); }
         );
     });
 });
@@ -285,7 +306,7 @@ router.get('/delete-decoration', (req, res) => {
         let list = parseDecorations(row && row.decorations);
         if (!isNaN(index) && index >= 0 && index < list.length) list.splice(index, 1);
         db.run("UPDATE api_contract SET decorations = ? WHERE endpoint = 'get-price'",
-            [JSON.stringify(list)], () => res.redirect('/dashboard'));
+            [JSON.stringify(list)], () => { invalidateCache(); res.redirect('/dashboard'); });
     });
 });
 
@@ -296,14 +317,14 @@ router.post('/add-region', (req, res) => {
     const codes = (countries || '').split(',').map(s => s.trim()).filter(Boolean);
     db.run('INSERT OR REPLACE INTO regions (id, name, countries, currency, is_default) VALUES (?,?,?,?,?)',
         [id.trim().toUpperCase(), name.trim(), JSON.stringify(codes), currency || 'EUR', is_default ? 1 : 0],
-        (err) => { if (err) console.error(err); res.redirect('/dashboard'); });
+        (err) => { if (err) console.error(err); invalidateRegionsCache(); res.redirect('/dashboard?ok=1&tab=config'); });
 });
 
 // GET /delete-region
 router.get('/delete-region', (req, res) => {
     const { id } = req.query;
     if (!id) return res.redirect('/dashboard');
-    db.run('DELETE FROM regions WHERE id = ?', [id], () => res.redirect('/dashboard'));
+    db.run('DELETE FROM regions WHERE id = ?', [id], () => { invalidateRegionsCache(); res.redirect('/dashboard'); });
 });
 
 // POST /add-base-price
@@ -332,7 +353,7 @@ router.post('/update-cache-config', (req, res) => {
                 'INSERT OR REPLACE INTO cache_config (endpoint, ttl_seconds) VALUES (?,?)',
                 [ep, ttl], r));
         return Promise.resolve();
-    })).then(() => res.redirect('/dashboard'));
+    })).then(() => res.redirect('/dashboard?ok=1&tab=config'));
 });
 
 // POST /update-item-price
@@ -358,7 +379,7 @@ router.post('/update-item-price', (req, res) => {
                 entry.activeRegions = entry.activeRegions.filter(r => r !== region);
             }
             db.run("UPDATE api_contract SET seasonal_items = ? WHERE endpoint = 'get-price'",
-                [JSON.stringify(list)], () => res.redirect('/dashboard'));
+                [JSON.stringify(list)], () => { invalidateCache(); res.redirect('/dashboard?ok=1&tab=contingut'); });
         });
     };
 
@@ -372,27 +393,84 @@ router.post('/update-item-price', (req, res) => {
     }
 });
 
-// GET /fix-db  — NOMÉS en entorns de desenvolupament local
-router.get('/fix-db', (req, res) => {
-    if (process.env.NODE_ENV === 'production') return res.status(403).send('Forbidden');
-    db.run('DROP TABLE IF EXISTS shop_prices', () => {
-        db.run(`CREATE TABLE shop_prices (
-            item_id TEXT, region TEXT, price REAL, currency TEXT,
-            PRIMARY KEY (item_id, region)
-        )`, () => {
-            res.send("<h1>Taula arreglada!</h1><p>Ja pots tornar al <a href='/dashboard'>Dashboard</a>.</p>");
-        });
-    });
-});
-
-// GET /nuke-items — NOMÉS en entorns de desenvolupament local
-router.get('/nuke-items', (req, res) => {
-    if (process.env.NODE_ENV === 'production') return res.status(403).send('Forbidden');
-    db.run("UPDATE api_contract SET seasonal_items = '[]' WHERE endpoint = 'get-price'", () => {
-        db.run("DELETE FROM shop_prices", () => {
-            res.send("<h1>Ítems i preus eliminats!</h1><p>Torna al <a href='/dashboard'>Dashboard</a>.</p>");
-        });
-    });
-});
-
 module.exports = router;
+
+// POST /update-item-conditions
+// Substitueix totes les condicions d'un item existent.
+router.post('/update-item-conditions', (req, res) => {
+    const b = req.body;
+    const itemId = (b.itemId || '').trim();
+    if (!itemId) return res.redirect('/dashboard?tab=contingut');
+
+    const conditions = [];
+    Object.keys(b).forEach(key => {
+        if (key.startsWith('ic_field_')) {
+            const idx = key.split('_').pop();
+            const f = b[key];
+            const op = b['ic_op_' + idx];
+            const v = (b['ic_val_' + idx] || '').trim();
+            if (f && op && v) conditions.push({ field: f, operator: op, value: v });
+        }
+    });
+
+    db.get("SELECT seasonal_items FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
+        const list = parseSeasonalItems(row && row.seasonal_items);
+        const entry = list.find(it => it.itemId === itemId);
+        if (!entry) return res.redirect('/dashboard?tab=contingut');
+
+        if (conditions.length > 0) {
+            entry.conditions = [conditions];
+        } else {
+            delete entry.conditions;
+        }
+
+        db.run("UPDATE api_contract SET seasonal_items = ? WHERE endpoint = 'get-price'",
+            [JSON.stringify(list)],
+            (errUpd) => {
+                if (errUpd) console.error('[update-item-conditions]', errUpd);
+                invalidateCache();
+                res.redirect('/dashboard?ok=1&tab=contingut');
+            }
+        );
+    });
+});
+
+// POST /update-decoration-conditions
+// Substitueix totes les condicions d'una decoració existent.
+router.post('/update-decoration-conditions', (req, res) => {
+    const b = req.body;
+    const decorationId = (b.decorationId || '').trim();
+    if (!decorationId) return res.redirect('/dashboard?tab=contingut');
+
+    const conditions = [];
+    Object.keys(b).forEach(key => {
+        if (key.startsWith('dc_field_')) {
+            const idx = key.split('_').pop();
+            const f = b[key];
+            const op = b['dc_op_' + idx];
+            const v = (b['dc_val_' + idx] || '').trim();
+            if (f && op && v) conditions.push({ field: f, operator: op, value: v });
+        }
+    });
+
+    db.get("SELECT decorations FROM api_contract WHERE endpoint = 'get-price'", (err, row) => {
+        const list = parseDecorations(row && row.decorations);
+        const entry = list.find(dc => dc.decorationId === decorationId);
+        if (!entry) return res.redirect('/dashboard?tab=contingut');
+
+        if (conditions.length > 0) {
+            entry.conditions = [conditions];
+        } else {
+            delete entry.conditions;
+        }
+
+        db.run("UPDATE api_contract SET decorations = ? WHERE endpoint = 'get-price'",
+            [JSON.stringify(list)],
+            (errUpd) => {
+                if (errUpd) console.error('[update-decoration-conditions]', errUpd);
+                invalidateCache();
+                res.redirect('/dashboard?ok=1&tab=contingut');
+            }
+        );
+    });
+});

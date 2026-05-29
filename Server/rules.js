@@ -18,11 +18,15 @@ function evalCondition({ field, operator, value }, data) {
     return ops[operator]?.() ?? false;
 }
 
+// rules.js - motor d'avaluació FND
 function applyRules(rules, data) {
     const matched = rules.filter(r =>
-        r.groups.some(g => g.conditions.every(c => evalCondition(c, data)))
+        r.groups && r.groups.some(g => g.conditions && g.conditions.every(c => evalCondition(c, data)))
     );
+
     if (matched.length === 0) return 0;
+
+    // Ordenem per prioritat i retornem el descompte de la primera regla
     matched.sort((a, b) => {
         const pa = a.priority ?? 0, pb = b.priority ?? 0;
         return pb !== pa ? pb - pa : b.discount - a.discount;
