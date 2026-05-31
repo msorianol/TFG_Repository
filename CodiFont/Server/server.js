@@ -58,10 +58,8 @@ const dashboardRoutes = require('./routes/dashboard');
 app.use('/', auth, adminRoutes);
 app.use('/', auth, dashboardRoutes);
 
-// Arranquem el servidor al port 3000 i mostrem un missatge al terminal
-// per confirmar que tot ha arrencat correctament.
-// El callback s'executa una sola vegada quan el servidor està llest
-// per acceptar connexions.
+// Arranquem el servidor al port 3000 i mostrem un missatge al terminal per confirmar que tot ha arrencat correctament.
+// El callback s'executa una sola vegada quan el servidor està llest per acceptar connexions.
 app.listen(3000, () => {
     console.log("Servidor CRM llest a http://localhost:3000/dashboard");
 });
