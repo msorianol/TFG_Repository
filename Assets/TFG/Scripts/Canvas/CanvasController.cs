@@ -23,7 +23,7 @@ namespace TFG.Scripts.Canvas
         [SerializeField] private Sprite santJordiShopImage;
         
         [Header("MAIN MENU SCENE")]
-        [SerializeField] private Object mainMenuScene;
+        [SerializeField] private string mainMenuSceneName;
 
         private void OnEnable()
         {
@@ -112,7 +112,7 @@ namespace TFG.Scripts.Canvas
         // Called in Canvas --> Shop_Root --> Buttons --> ReturnToMenuButton
         public void ReturnToMainMenu()
         {
-            SceneManager.LoadScene(mainMenuScene.name);
+            SceneManager.LoadScene(mainMenuSceneName);
         } 
         
         // Called in Canvas --> Shop_Root --> Buttons --> ClearPlayerPrefsButton

@@ -60,7 +60,7 @@ namespace Installers
         [SerializeField] private RunDataSO _runData;
 
         [Header("Main Menu Scene")] 
-        [SerializeField] private Object _mainMenuScene;
+        [SerializeField] private string _mainMenuSceneName;
 
         private CRM_Bridge _crmBridge;
 
@@ -73,8 +73,6 @@ namespace Installers
                 enabled = false;
                 return;
             }
-            
-            string sceneName = _mainMenuScene != null ? _mainMenuScene.name : "";
 
             _enemiesModel = new EnemiesModel();
             _playerModel = new PlayerModel();
@@ -89,7 +87,7 @@ namespace Installers
             var enemyBehaviourFactory = new EnemyBehaviourFactory(_playerModel, enemySpawnerView, _updateLoop);
 
             _playerController = new PlayerController(_playerModel, _playerView, _enemiesModel, projectileFactory,
-                _playerData, _xpModel, sceneName);
+                _playerData, _xpModel, _mainMenuSceneName);
             _updateLoop.RegisterUpdateable(_playerController);
             
             _upgradesModel = new UpgradesModel();
@@ -105,11 +103,11 @@ namespace Installers
             _enemiesController = new EnemiesController(_enemiesModel, _playerView, _levelModel,
                 enemyBehaviourFactory);
 
-            _runModel = new RunModel(_runData, sceneName);
+            _runModel = new RunModel(_runData, _mainMenuSceneName);
             _runController = new RunController(_runModel, _runView, _levelModel, _levelView, 
                 _thirdPersonController, _xpModel);
 
-            _inGameMenuModel = new InGameMenuModel(sceneName);
+            _inGameMenuModel = new InGameMenuModel(_mainMenuSceneName);
             _inGameMenuController = new InGameMenuController(_inGameMenuModel, _inGameMenuView);
             _updateLoop.RegisterUpdateable(_inGameMenuController);
         }

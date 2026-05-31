@@ -1,7 +1,8 @@
-using UnityEngine;
 using Features.MainMenu;
+using Game.GameScripts.Features.MainMenu;
+using UnityEngine;
 
-namespace Core.Installers
+namespace Game.GameScripts.Installers
 {
     public class MenuInstaller : MonoBehaviour
     {
@@ -11,17 +12,14 @@ namespace Core.Installers
         private MainMenuModel _mainMenuModel;
     
         [Header("Gameplay Scene")]
-        [SerializeField] private Object _gameplayScene;
+        [SerializeField] private string _gameplaySceneName;
         
         [Header("Shop Scene")]
-        [SerializeField] private Object _shopScene;
+        [SerializeField] private string _shopSceneName;
 
         void Start()
         {
-            string gameplaySceneName = _gameplayScene != null ? _gameplayScene.name : "";
-            string shopSceneName = _shopScene != null ? _shopScene.name : "";
-            
-            _mainMenuModel = new MainMenuModel(gameplaySceneName, shopSceneName);
+            _mainMenuModel = new MainMenuModel(_gameplaySceneName, _shopSceneName);
             
             _mainMenuController = new MainMenuController(_mainMenuModel, _mainMenuView);
         }

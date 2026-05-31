@@ -1,8 +1,10 @@
 using System;
+using UnityEngine;
 using UnityEngine.SceneManagement;
 using R3;
+using Features.MainMenu;
 
-namespace Features.MainMenu
+namespace Game.GameScripts.Features.MainMenu
 {
     public class MainMenuController : IDisposable
     {

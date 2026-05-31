@@ -16,7 +16,7 @@ let globalDataVersion = 0;
 // intentar inserir dades a una taula que encara no ha acabat de crear-se.
 db.serialize(() => {
 
-    // ── Taula api_contract ──
+    // --- Taula api_contract ---
     // Guarda la configuració de l'endpoint "get-price":
     // quins camps accepta (inputs), quins retorna (outputs),
     // les regles de descompte, els descomptes per temporada,
@@ -33,7 +33,7 @@ db.serialize(() => {
         decorations TEXT DEFAULT '[]'
     )`);
 
-    // ── Taula events ──
+    // --- Taula events ---
     // Guarda l'esdeveniment actiu del joc (normal, Nadal, Sant Jordi...).
     // Sempre tindrà una sola fila amb id=1.
     db.run(`CREATE TABLE IF NOT EXISTS events (
@@ -42,7 +42,7 @@ db.serialize(() => {
         message TEXT
     )`);
 
-    // ── Taula shop_prices ──
+    // --- Taula shop_prices ---
     // Guarda el preu de cada item per cada regió.
     // La clau primària és la combinació (item_id, region): no pot existir
     // el mateix item dues vegades per la mateixa regió.
@@ -54,7 +54,7 @@ db.serialize(() => {
         PRIMARY KEY (item_id, region)
     )`);
 
-    // ── Taula regions ──
+    // --- Taula regions ---
     // Cada fila és una regió geogràfica (EU, US, CAT...).
     // "countries" guarda un array JSON de codis de país (ex: ["ES","FR"]).
     // "is_default" indica si és la regió que s'usa quan cap país coincideix.
@@ -66,7 +66,7 @@ db.serialize(() => {
         is_default INTEGER DEFAULT 0
     )`);
 
-    // ── Taula cache_config ──
+    // --- Taula cache_config ---
     // Guarda el TTL (Time To Live) de cada endpoint en segons.
     // El TTL indica a Unity quant de temps pot guardar una resposta
     // sense tornar a preguntar al servidor.
@@ -75,7 +75,7 @@ db.serialize(() => {
         ttl_seconds INTEGER DEFAULT 300
     )`);
 
-    // ── Taula server_config ──
+    // --- Taula server_config ---
     // Taula de configuració general clau-valor.
     // Ara mateix només guarda "data_version".
     db.run(`CREATE TABLE IF NOT EXISTS server_config (
@@ -95,8 +95,7 @@ db.serialize(() => {
         globalDataVersion = row ? parseInt(row.value) : Date.now();
     });
 
-    // ── Dades per defecte ──
-
+    // --- Dades per defecte ---
     // Inserim la fila base del contracte de "get-price" si no existeix.
     // Per defecte, Unity envia "itemId" i rep "price" i "currency".
     // "INSERT OR IGNORE" evita sobreescriure la configuració existent.
@@ -109,7 +108,7 @@ db.serialize(() => {
     db.run(`INSERT OR IGNORE INTO events (id, name, message)
             VALUES (1, 'normal', 'Benvingut')`);
 
-    // ── Migracions ──
+    // --- Migracions ---
     // Funció auxiliar per afegir una columna nova a api_contract.
     // Si la columna ja existeix, SQLite llança un error, però el callback
     // buit "() => {}" l'ignora expressament. Això permet que el codi
