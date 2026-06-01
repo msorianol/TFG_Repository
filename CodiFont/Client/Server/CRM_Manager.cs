@@ -7,18 +7,13 @@ using TFG.Scripts.Server.Responses;
 
 namespace TFG.Scripts.Server
 {
-    /// <summary>
-    /// Gestor de comunicació amb el servidor LiveOps.
-    ///
-    /// Flux de caché:
-    ///   1. A l'inici i cada 5s: comprova si les dades locals han caducat.
-    ///   2. Si NO han caducat: usa les dades del fitxer local sense fer cap petició.
-    ///   3. Si SÍ han caducat: fa la petició, guarda la resposta amb el TTL
-    ///      que el servidor indica (cacheTtlSeconds) i aplica els canvis.
-    ///
-    /// Els fitxers de caché es guarden a Application.persistentDataPath:
-    ///   liveops_event.json, liveops_shop.json, liveops_price_sword.json, etc.
-    /// </summary>
+    /* Gestor de comunicació amb el servidor LiveOps
+    Flux de caché:
+      1. A l'inici i cada 5s: comprova si les dades locals han caducat
+      2. Si NO han caducat: usa les dades del fitxer local sense fer cap petició
+      3. Si SÍ han caducat: fa la petició, guarda la resposta amb el TTL que el servidor indica (cacheTtlSeconds) i aplica els canvis
+    Els fitxers de caché es guarden a Application.persistentDataPath: liveops_event.json, liveops_shop.json, liveops_price_sword.json, etc. */
+
     public class CRM_Manager : MonoBehaviour
     {
         // URLs
@@ -55,8 +50,8 @@ namespace TFG.Scripts.Server
             StartCoroutine(PollServerRoutine());
         }
 
-        // Cada 5s comprova si la caché ha caducat.
-        // Si no ha caducat, usa les dades locals sense fer cap petició.
+        // Cada 5s comprova si la caché ha caducat
+        // Si no ha caducat, usa les dades locals sense fer cap petició
         private IEnumerator PollServerRoutine()
         {
             while (true)

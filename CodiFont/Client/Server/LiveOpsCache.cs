@@ -4,14 +4,12 @@ using UnityEngine;
 
 namespace TFG.Scripts.Server
 {
-    /// <summary>
-    /// Gestor de caché local per al sistema LiveOps.
-    /// Desa i llegeix dades JSON a Application.persistentDataPath.
-    /// Cada entrada té un temps de caducitat configurat pel servidor (cacheTtlSeconds).
-    /// </summary>
+    /* Gestor de caché local per al sistema LiveOps
+     Desa i llegeix dades JSON a Application.persistentDataPath
+     Cada entrada té un temps de caducitat configurat pel servidor (cacheTtlSeconds) */
     public static class LiveOpsCache
     {
-        // ── Estructura interna d'un fitxer de caché ──────────────────────
+        // --- Estructura interna d'un fitxer de caché ---
         [Serializable]
         private class CacheEntry
         {
@@ -19,11 +17,8 @@ namespace TFG.Scripts.Server
             public string expiresAt; // ISO 8601: quan caduca
         }
 
-        // ── API pública ───────────────────────────────────────────────────
-
-        /// <summary>
-        /// Guarda una resposta JSON a disc amb el TTL indicat pel servidor.
-        /// </summary>
+        // --- API pública ---
+        // Guarda una resposta JSON a disc amb el TTL indicat pel servidor
         public static void Save(string key, string jsonData, int ttlSeconds)
         {
             var entry = new CacheEntry
@@ -37,10 +32,8 @@ namespace TFG.Scripts.Server
             Debug.LogWarning($"[CACHE] Guardat '{key}' · caduca en {ttlSeconds}s · path: {path}");
         }
 
-        /// <summary>
-        /// Intenta llegir la caché per a una clau.
-        /// Retorna el JSON si existeix i no ha caducat; null en cas contrari.
-        /// </summary>
+        // Intenta llegir la caché per a una clau
+        // Retorna el JSON si existeix i no ha caducat; null en cas contrari
         public static string Load(string key)
         {
             string path = GetPath(key);
@@ -71,10 +64,8 @@ namespace TFG.Scripts.Server
             }
         }
 
-        /// <summary>
-        /// Invalida (esborra) una entrada de caché.
-        /// Útil si vols forçar una recàrrega des del servidor.
-        /// </summary>
+        // Invalida (esborra) una entrada de caché
+        // Útil si vols forçar una recàrrega des del servidor
         public static void Invalidate(string key)
         {
             string path = GetPath(key);
@@ -85,9 +76,7 @@ namespace TFG.Scripts.Server
             }
         }
 
-        /// <summary>
-        /// Invalida totes les entrades de caché LiveOps.
-        /// </summary>
+        // Invalida totes les entrades de caché LiveOps
         public static void InvalidateAll()
         {
             string dir = Application.persistentDataPath;
@@ -96,8 +85,7 @@ namespace TFG.Scripts.Server
             Debug.LogWarning("[CACHE] Tota la caché invalidada");
         }
 
-        // ── Private ───────────────────────────────────────────────────────
-
+        // --- Private ---
         private static string GetPath(string key)
             => Path.Combine(Application.persistentDataPath, $"liveops_{key}.json");
     }
